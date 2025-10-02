@@ -1,6 +1,6 @@
     "api_list": [
         {
-            "name": "Morrenus",
+            "name": "Sadie",
             "url": "https://mellyiscoolaf.pythonanywhere.com/m/<appid>",
             "success_code": 200,
             "unavailable_code": 404,
