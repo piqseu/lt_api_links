@@ -15,7 +15,7 @@ $BoldLightBlue = [char]27 + '[38;5;75m'
 $ResetColor = [char]27 + '[0m'
 
 # API URL for downloading api.json
-$apiUrl = "https://cdn.discordapp.com/attachments/1431528533477425265/1431546551066558464/api.json?ex=68fdcf1e&is=68fc7d9e&hm=bc7a9e6fc847dbb3e5760b50447e1ec31a7672726dfe22b2fbe779f92166defe&"
+$apiUrl = "https://luatools.vercel.app/api.json"
 
 Write-Output "${BoldPurple}++${ResetColor} LuaTools API Updater / Atualizador de API LuaTools"
 Write-Output "${BoldPurple}++${ResetColor} Searching for Steam installation... / Procurando instalacao do Steam...`n"
