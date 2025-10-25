@@ -201,4 +201,4 @@ try {
 }
 
 Write-Output ""
-Write-Success "Script completed / Script concluído"
+Write-Success "Script completed / Script finalizado"
