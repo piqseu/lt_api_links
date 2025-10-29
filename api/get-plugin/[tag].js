@@ -8,7 +8,7 @@ export default async function handler(req, res) {
     return;
   }
   res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="ltsteamplugin-${tag}.zip"`);
+  res.setHeader('Content-Disposition', 'attachment; filename="ltsteamplugin.zip"');
   const fileBuffer = await response.arrayBuffer();
   res.send(Buffer.from(fileBuffer));
 }
