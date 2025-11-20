@@ -39,6 +39,9 @@ if (Test-Path $hidDllPath) {
 } else {
     Write-Host "hid.dll NOT found at: $hidDllPath" -ForegroundColor Red
     Write-Host "You do not have steamtools installed! reinstall probs" -ForegroundColor Red
+    Write-Host "`nPress Enter to exit..."
+    Read-Host
+    exit 1
 }
 
 # Step 3: Count .lua files in config/stplug-in
