@@ -1,4 +1,6 @@
 #by @piqseu on discord, thank him by spam pinging him. distrubuted via luatools
+#ty @malonin0807 for properly porting it to powershell
+#changes are commented with #+
 
 Write-Host "Starting ST Fixer..." -ForegroundColor Cyan
 
@@ -38,7 +40,8 @@ if (Test-Path $hidDllPath) {
     Write-Host "hid.dll found at: $hidDllPath" -ForegroundColor Green
 } else {
     Write-Host "hid.dll NOT found at: $hidDllPath" -ForegroundColor Red
-    Write-Host "You do not have steamtools installed! reinstall probs" -ForegroundColor Red
+    Write-Host "You do not have steamtools installed! Opening the download page..." -ForegroundColor Red
+    Start-Process "https://steamtools.net/download.html" #+ added a redirect to the st download page for ease of access
     Write-Host "`nPress Enter to exit..."
     Read-Host
     exit 1
@@ -126,12 +129,23 @@ if (Test-Path $userdataPath) {
         $userConfigPath = Join-Path $userFolder.FullName "config"
         if (Test-Path $userConfigPath) {
             $userCount++
-            $userBackupPath = Join-Path $backupPath $userFolder.Name
+            $userBackupPath = Join-Path -Path $backupPath -ChildPath (Join-Path "userdata" $userFolder.Name)
             if (-not (Test-Path $userBackupPath)) {
                 New-Item -ItemType Directory -Path $userBackupPath -Force | Out-Null
             }
             $userConfigBackup = Join-Path $userBackupPath "config"
             Move-Item -Path $userConfigPath -Destination $userConfigBackup -Force -ErrorAction SilentlyContinue
+            #+ Restore playtime (stole it from the achievements restore section lmao)
+            Write-Host "Restoring playtime for $($userFolder.Name) ..." -ForegroundColor Gray
+            Start-Sleep -Seconds 1
+            if (Test-Path $userBackupPath) {
+                if (-not (Test-Path (Split-Path $userConfigPath -Parent))) {
+                    New-Item -ItemType Directory -Path (Split-Path $userConfigPath -Parent) -Force | Out-Null
+                }
+                New-Item -ItemType Directory -Path $userConfigPath -Force | Out-Null
+                Copy-Item (Join-Path $userBackupPath "config\localconfig.vdf") -Destination (Join-Path $userConfigPath "localconfig.vdf") -Force -ErrorAction SilentlyContinue
+                Write-Host "Playtime for $($userFolder.Name) restored." -ForegroundColor Green
+                }
         }
     }
     if ($userCount -gt 0) {
@@ -152,6 +166,8 @@ if (Test-Path $achievementsBackup) {
     Write-Host "Achievements restored." -ForegroundColor Green
 }
 
+
+
 # Restart Steam with -clearbeta flag
 Write-Host "Starting Steam (beta disabled)..." -ForegroundColor Gray
 $steamExe = Join-Path $steamPath "steam.exe"
@@ -171,4 +187,3 @@ Write-Host "================================================================" -F
 Write-Host "`nYour games SHOULD work now, enjoy! Script by @piqseu on discord, thank him by spam pinging him" -ForegroundColor Cyan
 Write-Host "`nPress Enter to exit..."
 Read-Host
-
