@@ -41,6 +41,7 @@ $path = Join-Path $steam "hid.dll"
 if (!( Test-Path $path )) {
     function Print_Install {
         Log "ERR" "Install steamtools then press any key."
+        Log "ERR" "Start Steamtools FULLY once."
         Log "WARN" "Get steamtools at your own risks!"
     }
 
@@ -141,7 +142,7 @@ Log "LOG" "Downloading $name"
 Invoke-WebRequest -Uri $link -OutFile $subPath *> $null
 Log "LOG" "Unzipping $name"
 Expand-Archive -Path $subPath -DestinationPath $Path *> $null
-Remove-Item $subPath # Cleanup
+Remove-Item $subPath -ErrorAction SilentlyContinue
 
 Log "OK" "$upperName installed"
 
