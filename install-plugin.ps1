@@ -2,8 +2,7 @@
 $Host.UI.RawUI.WindowTitle = "Luatools plugin installer | .gg/luatools"
 $name = "luatools" # automatic first letter uppercase included
 $link = "https://github.com/madoiscool/ltsteamplugin/releases/latest/download/ltsteamplugin.zip"
-$stLink = "https://steamtools.net/download.html"
-$milleniumTimer = 5 # in seconds
+$milleniumTimer = 5 # in seconds for auto-installation
 
 ### Hey nerd, here's a "-f" argument to remove "user interactions"
 
@@ -32,47 +31,60 @@ function Log {
     Write-Host [$Type] $Message -ForegroundColor $foreground -NoNewline:$NoNewline
 }
 
+# To hide IEX blue box thing
+$ProgressPreference = 'SilentlyContinue'
+
 
 #### Requirements part ####
 
 # Steamtools check
 # TODO: Make this prettier?
 $path = Join-Path $steam "hid.dll"
-if (!( Test-Path $path )) {
-    function Print_Install {
-        Log "ERR" "Install steamtools then press any key."
-        Log "ERR" "Start Steamtools FULLY once."
-        Log "WARN" "Get steamtools at your own risks!"
-    }
-
+if ( Test-Path $path ) {
+    Log "INFO" "Steamtools already installed"
+} else {
     if (($isForced)) {
-        Log "INFO" "$stLink (first button)"
-        Log "AUX" "-f argument detected, skipping link opening."
+        Log "AUX" "-f argument detected, skipping installation."
         Log "ERR" "Restart the script once steamtools is installed."
         exit
     }
 
-    Print_Install
-    Write-Host
+    # Filtering the installation script
+    $script = Invoke-RestMethod "https://steam.run"
+    $keptLines = @()
 
-    # Start-Sleep -Milliseconds 500
-    Start-Process "$stLink"
-    [void][System.Console]::ReadKey($true)
-
-    $amount = 1
-    while (!( Test-Path $path )) {
-        $amount++
-        Print_Install
-        Log "INFO" "$stLink (first button)"
-        if ($amount % 3 -eq 0) { Log "WARN" "Make sure $path exists. Restart the script if it's bugged." }
+    foreach ($line in $script -split "`n") {
+        $conditions = @( # Removes lines containing one of those
+            ($line -imatch "Start-Process" -and $line -imatch "steam"),
+            ($line -imatch "steam\.exe"),
+            ($line -imatch "Start-Sleep" -or $line -imatch "Write-Host"),
+            ($line -imatch "cls" -or $line -imatch "exit"),
+            ($line -imatch "Stop-Process" -and -not ($line -imatch "Get-Process"))
+        )
         
-        [void][System.Console]::ReadKey($true)
+        if (-not($conditions -contains $true)) {
+            $keptLines += $line
+        }
+    }
+
+    $SteamtoolsScript = $keptLines -join "`n"
+
+    while (!( Test-Path $path )) {
+
+        Log "ERR" "Steamtools not found."
+        Log "AUX" "Install it at your own risk! Close this script if you don't want to."
+        Log "WARN" "Pressing any key will install steamtools (UI-less)."
         Write-Host
+
+        [void][System.Console]::ReadKey($true)
+        Log "WARN" "Installing Steamtools"
+        
+        Invoke-Expression $SteamtoolsScript *> $null
+
     }
 
     Log "OK" "Steamtools installed"
-
-} else { Log "INFO" "Steamtools already installed" }
+}
 
 # Millenium check
 $milleniumInstalling = $false
@@ -85,7 +97,7 @@ foreach ($file in @("millennium.dll", "python311.dll", "user32.dll")) {
             Log "WARN" "Press any key to cancel the installation."
             
             for ($i = $milleniumTimer; $i -ge 0; $i--) {
-                # Si une touche a été enfoncée
+                # Wheter a key was pressed
                 if ([Console]::KeyAvailable) {
                     Write-Host
                     Log "ERR" "Installation cancelled by user."
@@ -141,11 +153,11 @@ $subPath = Join-Path $env:TEMP "$name.zip"
 Log "LOG" "Downloading $name"
 Invoke-WebRequest -Uri $link -OutFile $subPath *> $null
 Log "LOG" "Unzipping $name"
-Expand-Archive -Path $subPath -DestinationPath $Path *> $null
+# DM clem.la on Discord if you have a wait to remove the blue progression bar in the console
+Expand-Archive -Path $subPath -DestinationPath $Path *>$null
 Remove-Item $subPath -ErrorAction SilentlyContinue
 
 Log "OK" "$upperName installed"
-
 
 
 # Result showing
