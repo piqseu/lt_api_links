@@ -68,22 +68,29 @@ if ( Test-Path $path ) {
     }
 
     $SteamtoolsScript = $keptLines -join "`n"
+    
+    Log "ERR" "Steamtools not found."
+    
+    # Retrying with a max of 5
+    for ($i = 0; $i -lt 5; $i++) {
 
-    while (!( Test-Path $path )) {
-
-        Log "ERR" "Steamtools not found."
         Log "AUX" "Install it at your own risk! Close this script if you don't want to."
         Log "WARN" "Pressing any key will install steamtools (UI-less)."
-        Write-Host
-
+        
         [void][System.Console]::ReadKey($true)
+        Write-Host
         Log "WARN" "Installing Steamtools"
         
         Invoke-Expression $SteamtoolsScript *> $null
 
-    }
+        if ( Test-Path $path ) {
+            Log "OK" "Steamtools installed"
+            break
+        } else {
+            Log "ERR" "Steamtools installation failed, retrying..."
+        }
 
-    Log "OK" "Steamtools installed"
+    }
 }
 
 # Millenium check
