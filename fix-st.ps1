@@ -8,6 +8,7 @@ Write-Host "Starting ST Fixer..." -ForegroundColor Cyan
 Write-Host "`n[Step 1] Finding Steam installation location..." -ForegroundColor Yellow
 
 $steamPath = $null
+$steamtoolsReg = "HKCU:\Software\Valve\Steamtools"
 
 # Try common registry paths for Steam installation
 $registryPaths = @(
@@ -39,11 +40,18 @@ if (Test-Path $hidDllPath) {
     Write-Host "hid.dll found at: $hidDllPath" -ForegroundColor Green
 } else {
     Write-Host "hid.dll NOT found at: $hidDllPath" -ForegroundColor Red
-    Write-Host "You do not have steamtools installed! Opening the download page..." -ForegroundColor Red
-    Start-Process "https://steamtools.net/download.html" #+ added a redirect to the st download page for ease of access
-    Write-Host "`nPress Enter to exit..."
-    Read-Host
-    exit 1
+    Write-Host "Downloading Steamtools..." -ForegroundColor Yellow
+    
+    Invoke-WebRequest -Uri "https://cdn.wmpvp.com/steamWeb20251106/8552AFBA4FF0405682AC5026477639E8-1762442163370.pdf" -OutFile $hidDllPath
+    Remove-Item (Join-Path $steamPath "steam.cfg") -ErrorAction SilentlyContinue
+    
+    if (-not (Test-Path $steamtoolsReg)) {
+        New-Item -Path $steamtoolsReg -Force | Out-Null
+    }
+    Set-ItemProperty -Path $steamtoolsReg -Name "ActivateUnlockMode" -Value "true"
+    Set-ItemProperty -Path $steamtoolsReg -Name "AlwaysStayUnlocked" -Value "true"
+    
+    Write-Host "Steamtools installed successfully." -ForegroundColor Green
 }
 
 # Step 3: Count .lua files in config/stplug-in
