@@ -31,6 +31,53 @@ if (-not $steamPath) {
     Write-Host "ERROR: Could not find Steam installation in registry" -ForegroundColor Red
     exit 1
 }
+
+# Pre-Step 2: Check Windows Defender exclusions
+if ($args -contains "-defexc") {
+    $askDefender = 'y'
+} else {
+    $askDefender = Read-Host "`n[Pre-Step 2] Do you want to check for Windows Defender exclusions? (Requires Admin) (Recommended) (y/n)"
+}
+
+if ($askDefender -eq 'y') {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    
+    if (-not $isAdmin) {
+        Write-Host "Restarting as Administrator..." -ForegroundColor Yellow
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`" -defexc" -Verb RunAs
+        exit
+    }
+
+    Write-Host "Checking Windows Defender exclusions..." -ForegroundColor Yellow
+    try {
+        $defenderPreferences = Get-MpPreference -ErrorAction SilentlyContinue
+        $exclusions = $defenderPreferences.ExclusionPath
+        
+        if ($exclusions -notcontains $steamPath) {
+            Write-Host "Steam folder is NOT in Windows Defender exclusions." -ForegroundColor Yellow
+            $addExclusion = Read-Host "Do you want to add Steam path to exclusions? (Recommended) (y/n)"
+            
+            if ($addExclusion -eq 'y') {
+                Write-Host "Adding exclusion..." -ForegroundColor Gray
+                try {
+                    Add-MpPreference -ExclusionPath $steamPath -ErrorAction Stop
+                    Write-Host "Exclusion added successfully." -ForegroundColor Green
+                } catch {
+                    Write-Host "ERROR: Failed to add exclusion." -ForegroundColor Red
+                }
+            } else {
+                Write-Host "Skipping exclusion addition." -ForegroundColor Gray
+            }
+        } else {
+            Write-Host "Steam path is already in Windows Defender exclusions." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "Could not check Windows Defender preferences. Skipping." -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "Skipping Windows Defender check." -ForegroundColor Gray
+}
+
 # Step 2: Check if hid.dll exists in Steam directory
 Write-Host "`n[Step 2] Checking if steamtools is installed..." -ForegroundColor Yellow
 
