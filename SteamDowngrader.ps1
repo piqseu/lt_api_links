@@ -259,12 +259,14 @@ function Download-AndExtractWithFallback {
                 Write-Host "  [ERROR] Fallback download also failed: $_" -ForegroundColor Red
                 throw "Both primary and fallback downloads failed. Last error: $_"
             } else {
-                # Check if it's a ZIP validation error (Cloudflare ban typically results in HTML page instead of ZIP)
-                if ($errorMessage -match "Invalid ZIP|corrupted|End of Central Directory|PK signature|ZIP file") {
-                    Write-Host "  [WARNING] ZIP validation failed (possible Cloudflare block), will try fallback URL..." -ForegroundColor Yellow
+                # Check if it's a ZIP validation error or download error that should trigger fallback
+                # Cloudflare blocks: ZIP validation errors (HTML page instead of ZIP)
+                # Connection issues: timeouts, connection failures, stuck downloads
+                if ($errorMessage -match "Invalid ZIP|corrupted|End of Central Directory|PK signature|ZIP file|Connection.*failed|timeout|stalled|stuck|failed to connect") {
+                    Write-Host "  [WARNING] Download failed (possible Cloudflare block or connection issue), will try fallback URL..." -ForegroundColor Yellow
                     continue
                 } else {
-                    # Other error, rethrow
+                    # Other error (like invalid response code, authentication, etc.), rethrow
                     throw $_
                 }
             }
