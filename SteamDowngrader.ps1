@@ -224,6 +224,72 @@ function Download-FileWithProgress {
     }
 }
 
+# Function to download and extract with fallback URL support
+function Download-AndExtractWithFallback {
+    param(
+        [string]$PrimaryUrl,
+        [string]$FallbackUrl,
+        [string]$TempZipPath,
+        [string]$DestinationPath,
+        [string]$Description
+    )
+    
+    $urls = @($PrimaryUrl, $FallbackUrl)
+    $lastError = $null
+    
+    foreach ($url in $urls) {
+        try {
+            # Clean up any existing temp file
+            if (Test-Path $TempZipPath) {
+                Remove-Item -Path $TempZipPath -Force -ErrorAction SilentlyContinue
+            }
+            
+            $isFallback = ($url -eq $FallbackUrl)
+            if ($isFallback) {
+                Write-Host "  [INFO] Primary download failed, trying fallback URL..." -ForegroundColor Yellow
+            }
+            
+            Write-Host "  Downloading from: $url" -ForegroundColor Gray
+            Download-FileWithProgress -Url $url -OutFile $TempZipPath
+            Write-Host "  [SUCCESS] Download complete" -ForegroundColor Green
+            
+            # Try to extract - this will validate the ZIP
+            Write-Host "  Extracting to: $DestinationPath" -ForegroundColor Gray
+            Expand-ArchiveWithProgress -ZipPath $TempZipPath -DestinationPath $DestinationPath
+            Write-Host "  [SUCCESS] Extraction complete" -ForegroundColor Green
+            
+            # Clean up temp file
+            Remove-Item -Path $TempZipPath -Force -ErrorAction SilentlyContinue
+            
+            return $true
+        } catch {
+            $lastError = $_
+            $errorMessage = $_.ToString()
+            if ($_.Exception -and $_.Exception.Message) {
+                $errorMessage = $_.Exception.Message
+            }
+            
+            if ($isFallback) {
+                # Both URLs failed
+                Write-Host "  [ERROR] Fallback download also failed: $_" -ForegroundColor Red
+                throw "Both primary and fallback downloads failed. Last error: $_"
+            } else {
+                # Check if it's a ZIP validation error (Cloudflare ban typically results in HTML page instead of ZIP)
+                if ($errorMessage -match "Invalid ZIP|corrupted|End of Central Directory|PK signature|ZIP file") {
+                    Write-Host "  [WARNING] ZIP validation failed (possible Cloudflare block), will try fallback URL..." -ForegroundColor Yellow
+                    continue
+                } else {
+                    # Other error, rethrow
+                    throw $_
+                }
+            }
+        }
+    }
+    
+    # Should never reach here, but just in case
+    throw $lastError
+}
+
 # Function to extract archive with inline progress bar
 function Expand-ArchiveWithProgress {
     param(
@@ -390,19 +456,11 @@ Write-Host ""
 # Step 2: Download and extract Steam x32 Latest Build
 Write-Host "Step 2: Downloading and extracting Steam x32 Latest Build..." -ForegroundColor Yellow
 $steamZipUrl = "http://files.luatools.work/OneOffFiles/latest32bitsteam.zip"
+$steamZipFallbackUrl = "https://github.com/madoiscool/lt_api_links/releases/download/unsteam/latest32bitsteam.zip"
 $tempSteamZip = Join-Path $env:TEMP "latest32bitsteam.zip"
 
 try {
-    Write-Host "  Downloading from: $steamZipUrl" -ForegroundColor Gray
-    Download-FileWithProgress -Url $steamZipUrl -OutFile $tempSteamZip
-    Write-Host "  [SUCCESS] Download complete" -ForegroundColor Green
-    
-    Write-Host "  Extracting to: $steamPath" -ForegroundColor Gray
-    Expand-ArchiveWithProgress -ZipPath $tempSteamZip -DestinationPath $steamPath
-    Write-Host "  [SUCCESS] Extraction complete" -ForegroundColor Green
-    
-    # Clean up temp file
-    Remove-Item -Path $tempSteamZip -Force -ErrorAction SilentlyContinue
+    Download-AndExtractWithFallback -PrimaryUrl $steamZipUrl -FallbackUrl $steamZipFallbackUrl -TempZipPath $tempSteamZip -DestinationPath $steamPath -Description "Steam x32 Latest Build"
     Write-Host ""
 } catch {
     Write-Host "  [ERROR] Failed to download or extract: $_" -ForegroundColor Red
@@ -418,19 +476,11 @@ if (Test-Path $millenniumDll) {
     Write-Host "  [INFO] millennium.dll found, downloading and extracting to replace it..." -ForegroundColor Yellow
     Write-Host "  Location: $millenniumDll" -ForegroundColor White
     $zipUrl = "http://files.luatools.work/OneOffFiles/luatoolsmilleniumbuild.zip"
+    $zipFallbackUrl = "https://github.com/madoiscool/lt_api_links/releases/download/unsteam/luatoolsmilleniumbuild.zip"
     $tempZip = Join-Path $env:TEMP "luatoolsmilleniumbuild.zip"
 
     try {
-        Write-Host "  Downloading from: $zipUrl" -ForegroundColor Gray
-        Download-FileWithProgress -Url $zipUrl -OutFile $tempZip
-        Write-Host "  [SUCCESS] Download complete" -ForegroundColor Green
-        
-        Write-Host "  Extracting to: $steamPath" -ForegroundColor Gray
-        Expand-ArchiveWithProgress -ZipPath $tempZip -DestinationPath $steamPath
-        Write-Host "  [SUCCESS] Extraction complete" -ForegroundColor Green
-        
-        # Clean up temp file
-        Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue
+        Download-AndExtractWithFallback -PrimaryUrl $zipUrl -FallbackUrl $zipFallbackUrl -TempZipPath $tempZip -DestinationPath $steamPath -Description "Millennium build"
         Write-Host ""
     } catch {
         Write-Host "  [ERROR] Failed to download or extract: $_" -ForegroundColor Red
