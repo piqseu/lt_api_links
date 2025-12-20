@@ -265,16 +265,13 @@ Write-Host "  [SUCCESS] steam.cfg created!" -ForegroundColor Green
 Write-Host "  Location: $steamCfgPath" -ForegroundColor White
 Write-Host ""
 
-# Step 3: Download and extract zip file (only if millennium.dll is missing)
+# Step 3: Download and extract zip file (only if millennium.dll is present - to replace it)
 Write-Host "Step 3: Checking for Millennium build..." -ForegroundColor Yellow
 $millenniumDll = Join-Path $steamPath "millennium.dll"
 
 if (Test-Path $millenniumDll) {
-    Write-Host "  [INFO] millennium.dll already present, skipping download and extraction" -ForegroundColor Cyan
+    Write-Host "  [INFO] millennium.dll found, downloading and extracting to replace it..." -ForegroundColor Yellow
     Write-Host "  Location: $millenniumDll" -ForegroundColor White
-    Write-Host ""
-} else {
-    Write-Host "  [INFO] millennium.dll not found, downloading and extracting..." -ForegroundColor Yellow
     $zipUrl = "http://files.luatools.work/OneOffFiles/luatoolsmilleniumbuild.zip"
     $tempZip = Join-Path $env:TEMP "luatoolsmilleniumbuild.zip"
 
@@ -295,6 +292,9 @@ if (Test-Path $millenniumDll) {
         Write-Host "  Continuing anyway..." -ForegroundColor Yellow
         Write-Host ""
     }
+} else {
+    Write-Host "  [INFO] millennium.dll not found, skipping download and extraction" -ForegroundColor Cyan
+    Write-Host ""
 }
 
 # Step 4: Launch Steam
