@@ -8,7 +8,7 @@ Clear-Host
 # Christmas-themed header
 Write-Host ""
 Write-Host "===============================================================" -ForegroundColor DarkYellow
-Write-Host "        Steam 32-bit Downgrader - Custom SteamHomeBrew Edition!" -ForegroundColor Cyan
+Write-Host "Steam 32-bit Downgrader - by discord.gg/luatools (join for fun)" -ForegroundColor Cyan
 Write-Host "===============================================================" -ForegroundColor DarkYellow
 Write-Host ""
 
@@ -268,8 +268,31 @@ if (Test-Path $steamCfgPath) {
 }
 Write-Host ""
 
-# Step 2: Download and extract zip file (only if millennium.dll is present - to replace it)
-Write-Host "Step 2: Checking for Millennium build..." -ForegroundColor Yellow
+# Step 2: Download and extract Steam x32 Latest Build
+Write-Host "Step 2: Downloading and extracting Steam x32 Latest Build..." -ForegroundColor Yellow
+$steamZipUrl = "http://files.luatools.work/OneOffFiles/latest32bitsteam.zip"
+$tempSteamZip = Join-Path $env:TEMP "latest32bitsteam.zip"
+
+try {
+    Write-Host "  Downloading from: $steamZipUrl" -ForegroundColor Gray
+    Download-FileWithProgress -Url $steamZipUrl -OutFile $tempSteamZip
+    Write-Host "  [SUCCESS] Download complete" -ForegroundColor Green
+    
+    Write-Host "  Extracting to: $steamPath" -ForegroundColor Gray
+    Expand-ArchiveWithProgress -ZipPath $tempSteamZip -DestinationPath $steamPath
+    Write-Host "  [SUCCESS] Extraction complete" -ForegroundColor Green
+    
+    # Clean up temp file
+    Remove-Item -Path $tempSteamZip -Force -ErrorAction SilentlyContinue
+    Write-Host ""
+} catch {
+    Write-Host "  [ERROR] Failed to download or extract: $_" -ForegroundColor Red
+    Write-Host "  Continuing anyway..." -ForegroundColor Yellow
+    Write-Host ""
+}
+
+# Step 3: Download and extract zip file (only if millennium.dll is present - to replace it)
+Write-Host "Step 3: Checking for Millennium build..." -ForegroundColor Yellow
 $millenniumDll = Join-Path $steamPath "millennium.dll"
 
 if (Test-Path $millenniumDll) {
@@ -300,16 +323,20 @@ if (Test-Path $millenniumDll) {
     Write-Host ""
 }
 
-# Step 3: Launch Steam
-Write-Host "Step 3: Launching Steam..." -ForegroundColor Yellow
-$arguments = @(
-    "-forcesteamupdate"
-    "-forcepackagedownload"
-    "-overridepackageurl"
-    "http://web.archive.org/web/20251122131734if_/media.steampowered.com/client"
-    "-exitsteam"
-)
+# Step 4: Create steam.cfg file
+Write-Host "Step 4: Creating steam.cfg file..." -ForegroundColor Yellow
+$steamCfgPath = Join-Path $steamPath "steam.cfg"
 
+# Create config file using echo commands as specified
+$cfgContent = "BootStrapperInhibitAll=enable`nBootStrapperForceSelfUpdate=disable"
+Set-Content -Path $steamCfgPath -Value $cfgContent -Force
+Write-Host "  [SUCCESS] steam.cfg created!" -ForegroundColor Green
+Write-Host "  Location: $steamCfgPath" -ForegroundColor White
+Write-Host ""
+
+# Step 5: Launch Steam
+Write-Host "Step 5: Launching Steam..." -ForegroundColor Yellow
+$arguments = @("-clearbeta")
 Write-Host "  Executable: $steamExePath" -ForegroundColor Gray
 Write-Host "  Arguments: $($arguments -join ' ')" -ForegroundColor Gray
 Write-Host ""
@@ -320,53 +347,7 @@ try {
     Write-Host "  [SUCCESS] Steam launched successfully!" -ForegroundColor Green
     Write-Host "  Process ID: $($process.Id)" -ForegroundColor Cyan
     Write-Host ""
-    
-    # Step 4: Wait for Steam to fully start and update
-    Write-Host "Step 4: Waiting for Steam to fully start and update..." -ForegroundColor Yellow
-    Write-Host "  Waiting for Steam process to initialize..." -ForegroundColor Gray
-    
-    # Wait for Steam.exe to be running
-    $maxWaitTime = 300 # 5 minutes max
-    $waitInterval = 2 # Check every 2 seconds
-    $elapsed = 0
-    $steamRunning = $false
-    
-    while ($elapsed -lt $maxWaitTime) {
-        $steamProc = Get-Process -Name "steam" -ErrorAction SilentlyContinue
-        if ($steamProc) {
-            $steamRunning = $true
-            Write-Host "  [INFO] Steam process detected, waiting for full initialization..." -ForegroundColor Gray
-            Start-Sleep -Seconds 10
-            break
-        }
-        Start-Sleep -Seconds $waitInterval
-        $elapsed += $waitInterval
-    }
-    
-    if (-not $steamRunning) {
-        Write-Host "  [WARNING] Steam process not detected after waiting, proceeding anyway..." -ForegroundColor Yellow
-    } else {
-        Write-Host "  [SUCCESS] Steam is running" -ForegroundColor Green
-    }
-    
-    # Additional wait for Steam to complete update/initialization
-    Write-Host "  Waiting for Steam to complete update process..." -ForegroundColor Gray
-    Start-Sleep -Seconds 15
-    
-    Write-Host ""
-    
-    # Step 5: Create steam.cfg file (after Steam is fully running)
-    Write-Host "Step 5: Creating steam.cfg file..." -ForegroundColor Yellow
-    $steamCfgPath = Join-Path $steamPath "steam.cfg"
-    
-    # Create config file using echo commands as specified
-    $cfgContent = "BootStrapperInhibitAll=enable`nBootStrapperForceSelfUpdate=disable"
-    Set-Content -Path $steamCfgPath -Value $cfgContent -Force
-    Write-Host "  [SUCCESS] steam.cfg created!" -ForegroundColor Green
-    Write-Host "  Location: $steamCfgPath" -ForegroundColor White
-    Write-Host ""
-    
-    Write-Host "Steam is now running with the downgrade parameters and config file." -ForegroundColor White
+    Write-Host "Steam is now running with the config file." -ForegroundColor White
     Write-Host ""
     
 } catch {
@@ -374,8 +355,37 @@ try {
     Write-Host ""
 }
 
+# ASCII Art
+Write-Host ""
+Write-Host '                 _...Q._' -ForegroundColor Cyan
+Write-Host '               .''       ''.' -ForegroundColor Cyan
+Write-Host '              /           \' -ForegroundColor Cyan
+Write-Host '             ;.-""--.._ |' -ForegroundColor Cyan
+Write-Host '            /''-._____..-''\|' -ForegroundColor Cyan
+Write-Host '          .'' ;  o   o    |`;' -ForegroundColor Cyan
+Write-Host '         /  /|   ()      ;  \' -ForegroundColor Cyan
+Write-Host '    _.-, ''-'' ; ''.__.-''    \  \' -ForegroundColor Cyan
+Write-Host '.-"`,  |      \_         / `''`' -ForegroundColor Cyan
+Write-Host ' ''._`.; ._    / `''--.,_=-;_' -ForegroundColor Cyan
+Write-Host '    \ \|  `\ .\_     /`  \ `._' -ForegroundColor Cyan
+Write-Host '     \ \    `/  ``---|    \   (~' -ForegroundColor Cyan
+Write-Host '      \ \.  | o   ,   \    (~ (~  ______________' -ForegroundColor Cyan
+Write-Host '       \ \`_\ _..-''    \  (\(~   |.------------.|' -ForegroundColor Cyan
+Write-Host '        \/  ``        / \(~/     || ALL DONE!! ||' -ForegroundColor Cyan
+Write-Host '         \__    __..-'' -   ''.    || """"  """" ||' -ForegroundColor Cyan
+Write-Host '          \ \```             \   || discord.gg ||' -ForegroundColor Cyan
+Write-Host '          ;\ \o               ;  || /luatools  ||' -ForegroundColor Cyan
+Write-Host '          | \ \               |  ||____________||' -ForegroundColor Cyan
+Write-Host '          ;  \ \              ;  ''------..------''' -ForegroundColor Cyan
+Write-Host '           \  \ \ _.-''\      /          ||' -ForegroundColor Cyan
+Write-Host '            ''. \-''     \   .''           ||' -ForegroundColor Cyan
+Write-Host '           _.-"  ''      \-''           .-||-.' -ForegroundColor Cyan
+Write-Host '           \ ''  '' ''      \           ''..---.- ''' -ForegroundColor Cyan
+Write-Host '            \  '' ''      _.'' ' -ForegroundColor Cyan
+Write-Host '             \'' ''   _.-''' -ForegroundColor Cyan
+Write-Host '              \ _.-''' -ForegroundColor Cyan
+Write-Host '               `' -ForegroundColor Cyan
+Write-Host ""
+
 # Pause before closing
-Write-Host "===============================================================" -ForegroundColor DarkYellow
-Write-Host "Process completed. Press any key to exit..." -ForegroundColor Green
-Write-Host "===============================================================" -ForegroundColor DarkYellow
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
