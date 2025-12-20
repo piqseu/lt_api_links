@@ -67,19 +67,58 @@ function Download-FileWithProgress {
         }
         $cacheBustUrl = $uriBuilder.ToString()
         
+        # First request to get content length and verify response
         $request = [System.Net.HttpWebRequest]::Create($cacheBustUrl)
         $request.CachePolicy = New-Object System.Net.Cache.RequestCachePolicy([System.Net.Cache.RequestCacheLevel]::NoCacheNoStore)
         $request.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
         $request.Headers.Add("Pragma", "no-cache")
-        $response = $request.GetResponse()
+        $request.Timeout = 30000 # 30 seconds timeout
+        $request.ReadWriteTimeout = 30000
+        
+        try {
+            $response = $request.GetResponse()
+        } catch {
+            Write-Host "  [ERROR] Connection failed: $_" -ForegroundColor Red
+            Write-Host "  [ERROR] URL: $cacheBustUrl" -ForegroundColor Red
+            throw "Connection timeout or failed to connect to server"
+        }
+        
+        # Check response code
+        $statusCode = [int]$response.StatusCode
+        if ($statusCode -ne 200) {
+            $response.Close()
+            Write-Host "  [ERROR] Invalid response code: $statusCode (expected 200)" -ForegroundColor Red
+            Write-Host "  [ERROR] URL: $cacheBustUrl" -ForegroundColor Red
+            throw "Server returned status code $statusCode instead of 200"
+        }
+        
+        # Check content length
         $totalLength = $response.ContentLength
+        if ($totalLength -le 0) {
+            $response.Close()
+            Write-Host "  [ERROR] Invalid content length: $totalLength (expected > 0)" -ForegroundColor Red
+            Write-Host "  [ERROR] URL: $cacheBustUrl" -ForegroundColor Red
+            throw "Server did not return valid content length"
+        }
+        
         $response.Close()
         
+        # Second request to download the file (no timeout - allow long downloads)
         $request = [System.Net.HttpWebRequest]::Create($cacheBustUrl)
         $request.CachePolicy = New-Object System.Net.Cache.RequestCachePolicy([System.Net.Cache.RequestCacheLevel]::NoCacheNoStore)
         $request.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
         $request.Headers.Add("Pragma", "no-cache")
-        $response = $request.GetResponse()
+        $request.Timeout = -1 # No timeout
+        $request.ReadWriteTimeout = -1 # No timeout
+        
+        try {
+            $response = $request.GetResponse()
+        } catch {
+            Write-Host "  [ERROR] Download connection failed: $_" -ForegroundColor Red
+            Write-Host "  [ERROR] URL: $cacheBustUrl" -ForegroundColor Red
+            throw "Connection failed during download"
+        }
+        
         $responseStream = $response.GetResponseStream()
         $targetStream = New-Object -TypeName System.IO.FileStream -ArgumentList $OutFile, Create
         
@@ -87,14 +126,39 @@ function Download-FileWithProgress {
         $count = $responseStream.Read($buffer, 0, $buffer.Length)
         $downloadedBytes = $count
         $lastUpdate = Get-Date
+        $lastBytesDownloaded = $downloadedBytes
+        $lastBytesUpdateTime = Get-Date
+        $stuckTimeoutSeconds = 60 # 1 minute timeout for stuck downloads
         
         while ($count -gt 0) {
             $targetStream.Write($buffer, 0, $count)
             $count = $responseStream.Read($buffer, 0, $buffer.Length)
             $downloadedBytes += $count
             
-            # Update progress every 100ms to avoid too frequent updates
+            # Check if download is stuck (no progress for 1 minute)
             $now = Get-Date
+            if ($downloadedBytes -gt $lastBytesDownloaded) {
+                # Bytes increased, reset stuck timer
+                $lastBytesDownloaded = $downloadedBytes
+                $lastBytesUpdateTime = $now
+            } else {
+                # No bytes downloaded, check if stuck
+                $timeSinceLastBytes = ($now - $lastBytesUpdateTime).TotalSeconds
+                if ($timeSinceLastBytes -ge $stuckTimeoutSeconds) {
+                    $targetStream.Close()
+                    $responseStream.Close()
+                    $response.Close()
+                    if (Test-Path $OutFile) {
+                        Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+                    }
+                    Write-Host ""
+                    Write-Host "  [ERROR] Download appears stuck (0 kbps for $stuckTimeoutSeconds seconds)" -ForegroundColor Red
+                    Write-Host "  [ERROR] Downloaded: $downloadedBytes bytes, Expected: $totalLength bytes" -ForegroundColor Red
+                    throw "Download stalled - no data received for $stuckTimeoutSeconds seconds"
+                }
+            }
+            
+            # Update progress every 100ms to avoid too frequent updates
             if (($now - $lastUpdate).TotalMilliseconds -ge 100) {
                 if ($totalLength -gt 0) {
                     $percentComplete = [math]::Round(($downloadedBytes / $totalLength) * 100, 2)
@@ -131,10 +195,32 @@ function Download-FileWithProgress {
         $responseStream.Close()
         $response.Close()
         
+        # Validate downloaded file size matches expected content length
+        if ($totalLength -gt 0) {
+            $fileInfo = Get-Item $OutFile -ErrorAction SilentlyContinue
+            if (-not $fileInfo -or $fileInfo.Length -ne $totalLength) {
+                Write-Host "  [ERROR] Downloaded file size mismatch!" -ForegroundColor Red
+                Write-Host "  [ERROR] Expected: $totalLength bytes, Got: $($fileInfo.Length) bytes" -ForegroundColor Red
+                if (Test-Path $OutFile) {
+                    Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+                }
+                throw "Downloaded file size does not match expected content length"
+            }
+        }
+        
         return $true
     } catch {
         Write-Host ""
-        throw $_
+        Write-Host "  [ERROR] Download failed: $_" -ForegroundColor Red
+        Write-Host "  [ERROR] Error details: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "  [ERROR] Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
+        Write-Host ""
+        Write-Host "Script execution stopped due to download error." -ForegroundColor Red
+        Write-Host "Press any key to exit..." -ForegroundColor Yellow
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        exit 1
     }
 }
 
@@ -146,8 +232,41 @@ function Expand-ArchiveWithProgress {
     )
     
     try {
+        # Validate ZIP file exists and has content
+        if (-not (Test-Path $ZipPath)) {
+            Write-Host "  [ERROR] ZIP file not found: $ZipPath" -ForegroundColor Red
+            throw "ZIP file does not exist"
+        }
+        
+        $zipFileInfo = Get-Item $ZipPath -ErrorAction Stop
+        if ($zipFileInfo.Length -eq 0) {
+            Write-Host "  [ERROR] ZIP file is empty (0 bytes)" -ForegroundColor Red
+            throw "ZIP file is empty"
+        }
+        
+        # Check if file starts with ZIP signature (PK header)
+        $zipStream = [System.IO.File]::OpenRead($ZipPath)
+        $header = New-Object byte[] 4
+        $bytesRead = $zipStream.Read($header, 0, 4)
+        $zipStream.Close()
+        
+        if ($bytesRead -lt 4 -or $header[0] -ne 0x50 -or $header[1] -ne 0x4B) {
+            Write-Host "  [ERROR] File does not appear to be a valid ZIP file (missing PK signature)" -ForegroundColor Red
+            Write-Host "  [ERROR] File size: $($zipFileInfo.Length) bytes" -ForegroundColor Red
+            throw "Invalid ZIP file format"
+        }
+        
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+        
+        # Try to open the ZIP file - this will fail if corrupted
+        try {
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+        } catch {
+            Write-Host "  [ERROR] ZIP file is corrupted or incomplete" -ForegroundColor Red
+            Write-Host "  [ERROR] File size: $($zipFileInfo.Length) bytes" -ForegroundColor Red
+            Write-Host "  [ERROR] Error: $($_.Exception.Message)" -ForegroundColor Red
+            throw "ZIP file is corrupted - download may have been interrupted. Please try again."
+        }
         $entries = $zip.Entries
         
         # Count only files (exclude directories)
