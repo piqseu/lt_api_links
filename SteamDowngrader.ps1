@@ -195,19 +195,6 @@ function Download-FileWithProgress {
         $responseStream.Close()
         $response.Close()
         
-        # Validate downloaded file size matches expected content length
-        if ($totalLength -gt 0) {
-            $fileInfo = Get-Item $OutFile -ErrorAction SilentlyContinue
-            if (-not $fileInfo -or $fileInfo.Length -ne $totalLength) {
-                Write-Host "  [ERROR] Downloaded file size mismatch!" -ForegroundColor Red
-                Write-Host "  [ERROR] Expected: $totalLength bytes, Got: $($fileInfo.Length) bytes" -ForegroundColor Red
-                if (Test-Path $OutFile) {
-                    Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
-                }
-                throw "Downloaded file size does not match expected content length"
-            }
-        }
-        
         return $true
     } catch {
         Write-Host ""
