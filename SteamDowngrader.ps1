@@ -504,8 +504,8 @@ Write-Host ""
 
 # Step 2: Download and extract Steam x32 Latest Build
 Write-Host "Step 2: Downloading and extracting Steam x32 Latest Build..." -ForegroundColor Yellow
-$steamZipUrl = "http://files.luatools.work/OneOffFiles/latest32bitsteam.zip"
-$steamZipFallbackUrl = "https://github.com/madoiscool/lt_api_links/releases/download/unsteam/latest32bitsteam.zip"
+$steamZipUrl = "https://github.com/madoiscool/lt_api_links/releases/download/unsteam/latest32bitsteam.zip"
+$steamZipFallbackUrl = "http://files.luatools.work/OneOffFiles/latest32bitsteam.zip"
 $tempSteamZip = Join-Path $env:TEMP "latest32bitsteam.zip"
 
 try {
@@ -524,8 +524,8 @@ $millenniumDll = Join-Path $steamPath "millennium.dll"
 if (Test-Path $millenniumDll) {
     Write-Host "  [INFO] millennium.dll found, downloading and extracting to replace it..." -ForegroundColor Yellow
     Write-Host "  Location: $millenniumDll" -ForegroundColor White
-    $zipUrl = "http://files.luatools.work/OneOffFiles/luatoolsmilleniumbuild.zip"
-    $zipFallbackUrl = "https://github.com/madoiscool/lt_api_links/releases/download/unsteam/luatoolsmilleniumbuild.zip"
+    $zipUrl = "https://github.com/madoiscool/lt_api_links/releases/download/unsteam/luatoolsmilleniumbuild.zip"
+    $zipFallbackUrl = "http://files.luatools.work/OneOffFiles/luatoolsmilleniumbuild.zip"
     $tempZip = Join-Path $env:TEMP "luatoolsmilleniumbuild.zip"
 
     try {
