@@ -57,12 +57,15 @@ function Download-FileWithProgress {
     
     try {
         # Add cache-busting to prevent PowerShell cache
-        $cacheBustUrl = $Url
-        if ($Url -notmatch '\?') {
-            $cacheBustUrl = "$Url?t=$(Get-Date -Format 'yyyyMMddHHmmss')"
+        $uri = New-Object System.Uri($Url)
+        $uriBuilder = New-Object System.UriBuilder($uri)
+        $timestamp = (Get-Date -Format 'yyyyMMddHHmmss')
+        if ($uriBuilder.Query) {
+            $uriBuilder.Query = $uriBuilder.Query.TrimStart('?') + "&t=" + $timestamp
         } else {
-            $cacheBustUrl = "$Url&t=$(Get-Date -Format 'yyyyMMddHHmmss')"
+            $uriBuilder.Query = "t=" + $timestamp
         }
+        $cacheBustUrl = $uriBuilder.ToString()
         
         $request = [System.Net.HttpWebRequest]::Create($cacheBustUrl)
         $request.CachePolicy = New-Object System.Net.Cache.RequestCachePolicy([System.Net.Cache.RequestCacheLevel]::NoCacheNoStore)
@@ -252,21 +255,21 @@ if ($steamProcesses) {
 } else {
     Write-Host "  [INFO] No Steam processes found running" -ForegroundColor Cyan
 }
-Write-Host ""
 
-# Step 2: Create steam.cfg file
-Write-Host "Step 2: Creating steam.cfg file..." -ForegroundColor Yellow
+# Delete steam.cfg if present
 $steamCfgPath = Join-Path $steamPath "steam.cfg"
-
-# Create config file using echo commands as specified
-$cfgContent = "BootStrapperInhibitAll=enable`nBootStrapperForceSelfUpdate=disable"
-Set-Content -Path $steamCfgPath -Value $cfgContent -Force
-Write-Host "  [SUCCESS] steam.cfg created!" -ForegroundColor Green
-Write-Host "  Location: $steamCfgPath" -ForegroundColor White
+if (Test-Path $steamCfgPath) {
+    try {
+        Remove-Item -Path $steamCfgPath -Force -ErrorAction Stop
+        Write-Host "  [INFO] Removed existing steam.cfg file" -ForegroundColor Gray
+    } catch {
+        Write-Host "  [WARNING] Could not remove steam.cfg: $_" -ForegroundColor Yellow
+    }
+}
 Write-Host ""
 
-# Step 3: Download and extract zip file (only if millennium.dll is present - to replace it)
-Write-Host "Step 3: Checking for Millennium build..." -ForegroundColor Yellow
+# Step 2: Download and extract zip file (only if millennium.dll is present - to replace it)
+Write-Host "Step 2: Checking for Millennium build..." -ForegroundColor Yellow
 $millenniumDll = Join-Path $steamPath "millennium.dll"
 
 if (Test-Path $millenniumDll) {
@@ -297,8 +300,8 @@ if (Test-Path $millenniumDll) {
     Write-Host ""
 }
 
-# Step 4: Launch Steam
-Write-Host "Step 4: Launching Steam..." -ForegroundColor Yellow
+# Step 3: Launch Steam
+Write-Host "Step 3: Launching Steam..." -ForegroundColor Yellow
 $arguments = @(
     "-forcesteamupdate"
     "-forcepackagedownload"
@@ -317,8 +320,53 @@ try {
     Write-Host "  [SUCCESS] Steam launched successfully!" -ForegroundColor Green
     Write-Host "  Process ID: $($process.Id)" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "Steam is now running with the downgrade parameters." -ForegroundColor White
-    Write-Host "Please wait for Steam to complete the update process." -ForegroundColor White
+    
+    # Step 4: Wait for Steam to fully start and update
+    Write-Host "Step 4: Waiting for Steam to fully start and update..." -ForegroundColor Yellow
+    Write-Host "  Waiting for Steam process to initialize..." -ForegroundColor Gray
+    
+    # Wait for Steam.exe to be running
+    $maxWaitTime = 300 # 5 minutes max
+    $waitInterval = 2 # Check every 2 seconds
+    $elapsed = 0
+    $steamRunning = $false
+    
+    while ($elapsed -lt $maxWaitTime) {
+        $steamProc = Get-Process -Name "steam" -ErrorAction SilentlyContinue
+        if ($steamProc) {
+            $steamRunning = $true
+            Write-Host "  [INFO] Steam process detected, waiting for full initialization..." -ForegroundColor Gray
+            Start-Sleep -Seconds 10
+            break
+        }
+        Start-Sleep -Seconds $waitInterval
+        $elapsed += $waitInterval
+    }
+    
+    if (-not $steamRunning) {
+        Write-Host "  [WARNING] Steam process not detected after waiting, proceeding anyway..." -ForegroundColor Yellow
+    } else {
+        Write-Host "  [SUCCESS] Steam is running" -ForegroundColor Green
+    }
+    
+    # Additional wait for Steam to complete update/initialization
+    Write-Host "  Waiting for Steam to complete update process..." -ForegroundColor Gray
+    Start-Sleep -Seconds 30
+    
+    Write-Host ""
+    
+    # Step 5: Create steam.cfg file (after Steam is fully running)
+    Write-Host "Step 5: Creating steam.cfg file..." -ForegroundColor Yellow
+    $steamCfgPath = Join-Path $steamPath "steam.cfg"
+    
+    # Create config file using echo commands as specified
+    $cfgContent = "BootStrapperInhibitAll=enable`nBootStrapperForceSelfUpdate=disable"
+    Set-Content -Path $steamCfgPath -Value $cfgContent -Force
+    Write-Host "  [SUCCESS] steam.cfg created!" -ForegroundColor Green
+    Write-Host "  Location: $steamCfgPath" -ForegroundColor White
+    Write-Host ""
+    
+    Write-Host "Steam is now running with the downgrade parameters and config file." -ForegroundColor White
     Write-Host ""
     
 } catch {
