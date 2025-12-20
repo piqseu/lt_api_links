@@ -351,7 +351,7 @@ try {
     
     # Additional wait for Steam to complete update/initialization
     Write-Host "  Waiting for Steam to complete update process..." -ForegroundColor Gray
-    Start-Sleep -Seconds 30
+    Start-Sleep -Seconds 15
     
     Write-Host ""
     
