@@ -49,6 +49,26 @@ if ( Test-Path $path ) {
         exit
     }
 
+    # Filtering the installation script
+    $script = Invoke-RestMethod "https://steam.run"
+    $keptLines = @()
+
+    foreach ($line in $script -split "`n") {
+        $conditions = @( # Removes lines containing one of those
+            ($line -imatch "Start-Process" -and $line -imatch "steam"),
+            ($line -imatch "steam\.exe"),
+            ($line -imatch "Start-Sleep" -or $line -imatch "Write-Host"),
+            ($line -imatch "cls" -or $line -imatch "exit"),
+            ($line -imatch "Stop-Process" -and -not ($line -imatch "Get-Process"))
+        )
+        
+        if (-not($conditions -contains $true)) {
+            $keptLines += $line
+        }
+    }
+
+    $SteamtoolsScript = $keptLines -join "`n"
+    
     Log "ERR" "Steamtools not found."
     
     # Retrying with a max of 5
@@ -61,17 +81,7 @@ if ( Test-Path $path ) {
         Write-Host
         Log "WARN" "Installing Steamtools"
         
-        try {
-            Invoke-WebRequest -Uri "https://cdn.wmpvp.com/steamWeb20251106/8552AFBA4FF0405682AC5026477639E8-1762442163370.pdf" -OutFile $path -ErrorAction Stop
-            Remove-Item (Join-Path $steam "steam.cfg") -ErrorAction SilentlyContinue
-            
-            $steamtoolsReg = "HKCU:\Software\Valve\Steamtools"
-            if (-not (Test-Path $steamtoolsReg)) { New-Item -Path $steamtoolsReg -Force | Out-Null }
-            Set-ItemProperty -Path $steamtoolsReg -Name "ActivateUnlockMode" -Value "true"
-            Set-ItemProperty -Path $steamtoolsReg -Name "AlwaysStayUnlocked" -Value "true"
-        } catch {
-            Log "ERR" "Installation failed: $($_.Exception.Message)"
-        }
+        Invoke-Expression $SteamtoolsScript *> $null
 
         if ( Test-Path $path ) {
             Log "OK" "Steamtools installed"
@@ -114,28 +124,6 @@ foreach ($file in @("millennium.dll", "python311.dll", "user32.dll")) {
         & { Invoke-Expression (Invoke-WebRequest 'https://steambrew.app/install.ps1' -UseBasicParsing).Content } *> $null
 
         Log "OK" "Millenium done installing"
-
-        $port8080 = Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($port8080) {
-            $procId = $port8080.OwningProcess
-            $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
-            $procName = if ($proc) { $proc.ProcessName } else { "Unknown" }
-            
-            Log "WARN" "Port 8080 (needed for Millennium to open) is being used by $procName (PID: $procId)"
-            
-            if (-not $isForced) {
-                Write-Host "Do you want to kill this process? (y/n) " -ForegroundColor Yellow -NoNewline
-                $response = Read-Host
-                if ($response.ToLower() -eq "y") {
-                    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-                    Log "OK" "Process killed"
-                } else {
-                    Log "WARN" "Steam might not open correctly"
-                }
-            } else {
-                Log "WARN" "Steam might not open correctly"
-            }
-        }
         $milleniumInstalling = $true
         break
     }
