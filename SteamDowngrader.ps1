@@ -282,7 +282,6 @@ $arguments = @(
     "-overridepackageurl"
     "http://web.archive.org/web/20251122131734if_/media.steampowered.com/client"
     "-exitsteam"
-    "-clearbeta"
 )
 
 Write-Host "  Executable: $steamExePath" -ForegroundColor Gray
