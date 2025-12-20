@@ -1,304 +1,391 @@
-## Configure this
-$Host.UI.RawUI.WindowTitle = "Luatools plugin installer | .gg/luatools"
-$name = "luatools" # automatic first letter uppercase included
-$link = "https://github.com/madoiscool/ltsteamplugin/releases/latest/download/ltsteamplugin.zip"
-$milleniumTimer = 5 # in seconds for auto-installation
+#Requires -Version 5.1
+# Steam 32-bit Downgrader with Christmas Theme
+# Gets Steam path from registry and runs with specified parameters
 
-### Hey nerd, here's a "-f" argument to remove "user interactions"
+# Clear screen
+Clear-Host
 
-# Hidden defines
-$isForced = $args -contains "-f"
-$ProgressPreference = 'SilentlyContinue' # To hide da blue box thing
+# Christmas-themed header
+Write-Host ""
+Write-Host "===============================================================" -ForegroundColor DarkYellow
+Write-Host "Steam 32-bit Downgrader - by discord.gg/luatools (join for fun)" -ForegroundColor Cyan
+Write-Host "===============================================================" -ForegroundColor DarkYellow
+Write-Host ""
 
-#### Logging defines ####
-function Log {
-    param ([string]$Type, [string]$Message, [boolean]$NoNewline = $false)
-    switch ($Type) {
-        "OK"   { $foreground = "Green" }
-        "INFO" { $foreground = "Blue" }
-        "ERR"  { $foreground = "Red" }
-        "WARN" { $foreground = "Yellow" }
-        "LOG"  { $foreground = "Magenta" }
-        "AUX"  { $foreground = "DarkGray" }
-        default { $foreground = "White" }
+# Function to get Steam path from registry
+function Get-SteamPath {
+    $steamPath = $null
+    
+    Write-Host "Searching for Steam installation..." -ForegroundColor Gray
+    
+    # Try HKCU first (User registry)
+    $regPath = "HKCU:\Software\Valve\Steam"
+    if (Test-Path $regPath) {
+        $steamPath = (Get-ItemProperty -Path $regPath -Name "SteamPath" -ErrorAction SilentlyContinue).SteamPath
+        if ($steamPath -and (Test-Path $steamPath)) {
+            return $steamPath
+        }
     }
-
-    $date = Get-Date -Format "HH:mm:ss"
-    $prefix = if ($NoNewline) { "`r[$date] " } else { "[$date] " }
-    Write-Host $prefix -ForegroundColor "Cyan" -NoNewline
-
-    Write-Host "[$Type] $Message" -ForegroundColor $foreground -NoNewline:$NoNewline
+    
+    # Try HKLM (System registry)
+    $regPath = "HKLM:\Software\Valve\Steam"
+    if (Test-Path $regPath) {
+        $steamPath = (Get-ItemProperty -Path $regPath -Name "InstallPath" -ErrorAction SilentlyContinue).InstallPath
+        if ($steamPath -and (Test-Path $steamPath)) {
+            return $steamPath
+        }
+    }
+    
+    # Try 32-bit registry on 64-bit systems
+    $regPath = "HKLM:\Software\WOW6432Node\Valve\Steam"
+    if (Test-Path $regPath) {
+        $steamPath = (Get-ItemProperty -Path $regPath -Name "InstallPath" -ErrorAction SilentlyContinue).InstallPath
+        if ($steamPath -and (Test-Path $steamPath)) {
+            return $steamPath
+        }
+    }
+    
+    return $null
 }
 
-#### check all da registries for erm steam installation ####
-function Get-SteamPath {
-    $registryPaths = @(
-        "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam",
-        "HKLM:\SOFTWARE\Valve\Steam",
-        "HKCU:\SOFTWARE\Valve\Steam"
+# Function to download file with inline progress bar
+function Download-FileWithProgress {
+    param(
+        [string]$Url,
+        [string]$OutFile
     )
     
-    foreach ($regPath in $registryPaths) {
-        try {
-            $steamPath = (Get-ItemProperty -Path $regPath -ErrorAction Stop).InstallPath
-            if ($steamPath -and (Test-Path $steamPath)) {
-                return $steamPath
-            }
-        } catch {
-            continue
-        }
-    }
-    
-    Log "ERR" "Could not find Steam installation path. Is Steam installed?"
-    exit 1
-}
-
-function Test-MilleniumInstalled {
-    param ([string]$SteamPath)
-    
-    $requiredFiles = @("millennium.dll", "python311.dll", "user32.dll")
-    $missing = @()
-    
-    foreach ($file in $requiredFiles) {
-        $filePath = Join-Path $SteamPath $file
-        if (-not (Test-Path $filePath)) {
-            $missing += $file
-        }
-    }
-    
-    return @{
-        Installed = ($missing.Count -eq 0)
-        MissingFiles = $missing
-    }
-}
-
-
-#### Requirements part ####
-
-# show the steam installatio
-$steam = Get-SteamPath
-$upperName = $name.Substring(0,1).ToUpper() + $name.Substring(1).ToLower()
-Log "INFO" "Steam installation found at: $steam"
-
-# Steamtools check
-$hidDllPath = Join-Path $steam "hid.dll"
-if (Test-Path $hidDllPath) {
-    Log "INFO" "Steamtools already installed"
-} else {
-    if ($isForced) {
-        Log "AUX" "-f argument detected, skipping installation."
-        Log "ERR" "Restart the script once steamtools is installed."
-        exit 1
-    }
-
     try {
-        # fetching and making sure its the right script type beat
-        Log "INFO" "Fetching Steamtools installation script..."
-        $script = Invoke-RestMethod -Uri "https://steam.run" -ErrorAction Stop
-        $keptLines = @()
-
-        foreach ($line in $script -split "`n") {
-            $conditions = @( # Removes lines containing one of those
-                ($line -imatch "Start-Process" -and $line -imatch "steam"),
-                ($line -imatch "steam\.exe"),
-                ($line -imatch "Start-Sleep" -or $line -imatch "Write-Host"),
-                ($line -imatch "cls" -or $line -imatch "exit"),
-                ($line -imatch "Stop-Process" -and -not ($line -imatch "Get-Process"))
-            )
-            
-            if (-not ($conditions -contains $true)) {
-                $keptLines += $line
-            }
-        }
-
-        $SteamtoolsScript = $keptLines -join "`n"
-
-        while (-not (Test-Path $hidDllPath)) {
-            Log "ERR" "Steamtools not found."
-            Log "AUX" "Install it at your own risk! Close this script if you don't want to."
-            Log "WARN" "Pressing any key will install steamtools (UI-less)."
-            Write-Host
-
-            [void][System.Console]::ReadKey($true)
-            Log "WARN" "Installing Steamtools"
-            
-            try {
-                Invoke-Expression $SteamtoolsScript *> $null
-            } catch {
-                Log "ERR" "Steamtools installation failed: $($_.Exception.Message)"
-                Log "WARN" "Please try again or install manually."
-                continue
-            }
-        }
-
-        Log "OK" "Steamtools installed"
-    } catch {
-        Log "ERR" "Failed to fetch Steamtools installation script: $($_.Exception.Message)"
-        exit 1
-    }
-}
-
-# Millenium check
-$milleniumStatus = Test-MilleniumInstalled -SteamPath $steam
-$milleniumInstalling = $false
-
-if (-not $milleniumStatus.Installed) {
-    $missingFiles = $milleniumStatus.MissingFiles -join ", "
-    Log "WARN" "Millenium files missing: $missingFiles"
-    
-    # Ask confirmation to download (use -f to skip)
-    if (-not $isForced) {
-        Log "ERR" "Millenium not found, installation process will start in $milleniumTimer seconds."
-        Log "WARN" "Press any key to cancel the installation."
-        
-        for ($i = $milleniumTimer; $i -ge 0; $i--) {
-            # Whether a key was pressed
-            if ([Console]::KeyAvailable) {
-                Write-Host
-                Log "ERR" "Installation cancelled by user."
-                exit 1
-            }
-
-            Log "LOG" "Installing Millenium in $i second(s)... Press any key to cancel." $true
-            Start-Sleep -Seconds 1
-        }
-        Write-Host
-    } else {
-        Log "ERR" "Millenium not found, installation process will instantly start (-f argument)."
-    }
-
-    Log "INFO" "Installing Millenium..."
-    
-    try {
-        $installScript = Invoke-WebRequest -Uri 'https://steambrew.app/install.ps1' -UseBasicParsing -ErrorAction Stop
-        Invoke-Expression $installScript.Content *> $null
-        
-        # Verify installation succeeded
-        Start-Sleep -Seconds 2 # Give installation time to complete
-        $verifyStatus = Test-MilleniumInstalled -SteamPath $steam
-        
-        if ($verifyStatus.Installed) {
-            Log "OK" "Millenium installation completed and verified."
-            $milleniumInstalling = $true
+        # Add cache-busting to prevent PowerShell cache
+        $uri = New-Object System.Uri($Url)
+        $uriBuilder = New-Object System.UriBuilder($uri)
+        $timestamp = (Get-Date -Format 'yyyyMMddHHmmss')
+        if ($uriBuilder.Query) {
+            $uriBuilder.Query = $uriBuilder.Query.TrimStart('?') + "&t=" + $timestamp
         } else {
-            $stillMissing = $verifyStatus.MissingFiles -join ", "
-            Log "WARN" "Millenium installation completed but some files are still missing: $stillMissing"
-            Log "WARN" "Installation may have partially failed. Continuing anyway..."
-            $milleniumInstalling = $true
+            $uriBuilder.Query = "t=" + $timestamp
         }
-    } catch {
-        Log "ERR" "Millenium installation failed: $($_.Exception.Message)"
-        exit 1
-    }
-} else {
-    Log "INFO" "Millenium already installed"
-}
-
-
-
-#### Plugin part ####
-# Ensuring \Steam\plugins
-$pluginsDir = Join-Path $steam "plugins"
-if (-not (Test-Path $pluginsDir)) {
-    try {
-        New-Item -Path $pluginsDir -ItemType Directory -Force | Out-Null
-        Log "INFO" "Created plugins directory"
-    } catch {
-        Log "ERR" "Failed to create plugins directory: $($_.Exception.Message)"
-        exit 1
-    }
-}
-
-$pluginPath = Join-Path $pluginsDir $name # Defaulting if no install found
-
-# Checking for existing plugin named "$name"
-try {
-    $existingPlugins = Get-ChildItem -Path $pluginsDir -Directory -ErrorAction SilentlyContinue
-    foreach ($plugin in $existingPlugins) {
-        $pluginJsonPath = Join-Path $plugin.FullName "plugin.json"
-        if (Test-Path $pluginJsonPath) {
-            try {
-                $json = Get-Content $pluginJsonPath -Raw | ConvertFrom-Json -ErrorAction Stop
-                if ($json.name -eq $name) {
-                    Log "INFO" "Plugin already installed, updating it"
-                    $pluginPath = $plugin.FullName # Replacing default path
-                    break
+        $cacheBustUrl = $uriBuilder.ToString()
+        
+        $request = [System.Net.HttpWebRequest]::Create($cacheBustUrl)
+        $request.CachePolicy = New-Object System.Net.Cache.RequestCachePolicy([System.Net.Cache.RequestCacheLevel]::NoCacheNoStore)
+        $request.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
+        $request.Headers.Add("Pragma", "no-cache")
+        $response = $request.GetResponse()
+        $totalLength = $response.ContentLength
+        $response.Close()
+        
+        $request = [System.Net.HttpWebRequest]::Create($cacheBustUrl)
+        $request.CachePolicy = New-Object System.Net.Cache.RequestCachePolicy([System.Net.Cache.RequestCacheLevel]::NoCacheNoStore)
+        $request.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
+        $request.Headers.Add("Pragma", "no-cache")
+        $response = $request.GetResponse()
+        $responseStream = $response.GetResponseStream()
+        $targetStream = New-Object -TypeName System.IO.FileStream -ArgumentList $OutFile, Create
+        
+        $buffer = New-Object byte[] 10KB
+        $count = $responseStream.Read($buffer, 0, $buffer.Length)
+        $downloadedBytes = $count
+        $lastUpdate = Get-Date
+        
+        while ($count -gt 0) {
+            $targetStream.Write($buffer, 0, $count)
+            $count = $responseStream.Read($buffer, 0, $buffer.Length)
+            $downloadedBytes += $count
+            
+            # Update progress every 100ms to avoid too frequent updates
+            $now = Get-Date
+            if (($now - $lastUpdate).TotalMilliseconds -ge 100) {
+                if ($totalLength -gt 0) {
+                    $percentComplete = [math]::Round(($downloadedBytes / $totalLength) * 100, 2)
+                    $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
+                    $totalMB = [math]::Round($totalLength / 1MB, 2)
+                    
+                    # Update progress on same line
+                    $progressBarLength = [math]::Floor($percentComplete / 2)
+                    $progressBar = "=" * $progressBarLength
+                    $progressBar = $progressBar.PadRight(50)
+                    Write-Host "`r  Progress: [$progressBar] $percentComplete% ($downloadedMB MB / $totalMB MB)" -NoNewline -ForegroundColor Cyan
+                } else {
+                    # Show bytes downloaded if total length unknown
+                    $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
+                    Write-Host "`r  Progress: Downloaded $downloadedMB MB..." -NoNewline -ForegroundColor Cyan
                 }
-            } catch {
-                Log "AUX" "Skipping invalid plugin.json at $pluginJsonPath"
-                continue
+                $lastUpdate = $now
             }
         }
-    }
-} catch {
-    Log "WARN" "Error checking for existing plugins: $($_.Exception.Message)"
-}
-
-# Installation 
-$tempZipPath = Join-Path $env:TEMP "$name.zip"
-
-try {
-    Log "LOG" "Downloading $name from $link"
-    Invoke-WebRequest -Uri $link -OutFile $tempZipPath -UseBasicParsing -ErrorAction Stop
-    
-    if (-not (Test-Path $tempZipPath)) {
-        throw "Downloaded file not found"
-    }
-    
-    $fileSize = (Get-Item $tempZipPath).Length
-    if ($fileSize -eq 0) {
-        throw "Downloaded file is empty"
-    }
-    
-    Log "LOG" "Unzipping $name ($([math]::Round($fileSize/1KB, 2)) KB)"
-    
-    # Ensure target directory exists
-    if (-not (Test-Path $pluginPath)) {
-        New-Item -Path $pluginPath -ItemType Directory -Force | Out-Null
-    }
-    
-    Expand-Archive -Path $tempZipPath -DestinationPath $pluginPath -Force -ErrorAction Stop
-    
-    # Verify plugin.json exists after extraction
-    $extractedPluginJson = Join-Path $pluginPath "plugin.json"
-    if (Test-Path $extractedPluginJson) {
-        Log "OK" "$upperName installed successfully at $pluginPath"
-    } else {
-        Log "WARN" "$upperName extracted but plugin.json not found. Installation may be incomplete."
-    }
-} catch {
-    Log "ERR" "Plugin installation failed: $($_.Exception.Message)"
-    if (Test-Path $tempZipPath) {
-        Remove-Item $tempZipPath -ErrorAction SilentlyContinue
-    }
-    exit 1
-} finally {
-    # Cleanup temp file
-    if (Test-Path $tempZipPath) {
-        Remove-Item $tempZipPath -ErrorAction SilentlyContinue
+        
+        # Final update to show 100%
+        if ($totalLength -gt 0) {
+            $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
+            $totalMB = [math]::Round($totalLength / 1MB, 2)
+            $progressBar = "=" * 50
+            Write-Host "`r  Progress: [$progressBar] 100.00% ($totalMB MB / $totalMB MB)" -NoNewline -ForegroundColor Cyan
+        } else {
+            $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
+            Write-Host "`r  Progress: Downloaded $downloadedMB MB... Complete!" -NoNewline -ForegroundColor Cyan
+        }
+        
+        Write-Host "" # New line after progress
+        $targetStream.Close()
+        $responseStream.Close()
+        $response.Close()
+        
+        return $true
+    } catch {
+        Write-Host ""
+        throw $_
     }
 }
 
-
-# Result showing
-Write-Host
-if ($milleniumInstalling) {
-    Log "WARN" "Steam startup will be longer, don't panic and don't touch anything in Steam!"
+# Function to extract archive with inline progress bar
+function Expand-ArchiveWithProgress {
+    param(
+        [string]$ZipPath,
+        [string]$DestinationPath
+    )
+    
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+        $entries = $zip.Entries
+        
+        # Count only files (exclude directories)
+        $fileEntries = @()
+        foreach ($entry in $entries) {
+            if (-not ($entry.FullName.EndsWith('\') -or $entry.FullName.EndsWith('/'))) {
+                $fileEntries += $entry
+            }
+        }
+        $totalFiles = $fileEntries.Count
+        $extractedCount = 0
+        $lastUpdate = Get-Date
+        
+        foreach ($entry in $entries) {
+            $entryPath = Join-Path $DestinationPath $entry.FullName
+            
+            # Create directory if it doesn't exist
+            $entryDir = Split-Path $entryPath -Parent
+            if ($entryDir -and -not (Test-Path $entryDir)) {
+                New-Item -ItemType Directory -Path $entryDir -Force | Out-Null
+            }
+            
+            # Skip if entry is a directory
+            if ($entry.FullName.EndsWith('\') -or $entry.FullName.EndsWith('/')) {
+                continue
+            }
+            
+            # Extract the file
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $entryPath, $true)
+            $extractedCount++
+            
+            # Update progress every 50ms
+            $now = Get-Date
+            if (($now - $lastUpdate).TotalMilliseconds -ge 50) {
+                $percentComplete = [math]::Round(($extractedCount / $totalFiles) * 100, 2)
+                $progressBarLength = [math]::Floor($percentComplete / 2)
+                $progressBar = "=" * $progressBarLength
+                $progressBar = $progressBar.PadRight(50)
+                Write-Host "`r  Progress: [$progressBar] $percentComplete% ($extractedCount / $totalFiles files)" -NoNewline -ForegroundColor Cyan
+                $lastUpdate = $now
+            }
+        }
+        
+        # Final update to show 100%
+        $progressBar = "=" * 50
+        Write-Host "`r  Progress: [$progressBar] 100.00% ($totalFiles / $totalFiles files)" -NoNewline -ForegroundColor Cyan
+        
+        Write-Host "" # New line after progress
+        $zip.Dispose()
+        
+        return $true
+    } catch {
+        Write-Host ""
+        throw $_
+    }
 }
 
-# Waiting input (unless -f argument passed)
-if (-not $isForced) {
-    Log "OK" "Press any key to restart Steam and finish the installation!"
-    [void][System.Console]::ReadKey($true)
+# Step 0: Get Steam path from registry
+Write-Host "Step 0: Locating Steam installation..." -ForegroundColor Yellow
+$steamPath = Get-SteamPath
+$steamExePath = $null
+
+if (-not $steamPath) {
+    Write-Host "  [ERROR] Steam installation not found in registry." -ForegroundColor Red
+    Write-Host "  Please ensure Steam is installed on your system." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "===============================================================" -ForegroundColor DarkYellow
+    Write-Host "Process completed. Press any key to exit..." -ForegroundColor Green
+    Write-Host "===============================================================" -ForegroundColor DarkYellow
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    exit
+}
+
+$steamExePath = Join-Path $steamPath "Steam.exe"
+
+if (-not (Test-Path $steamExePath)) {
+    Write-Host "  [ERROR] Steam.exe not found at: $steamExePath" -ForegroundColor Red
+    Write-Host "  The Steam directory exists but Steam.exe is missing." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "===============================================================" -ForegroundColor DarkYellow
+    Write-Host "Process completed. Press any key to exit..." -ForegroundColor Green
+    Write-Host "===============================================================" -ForegroundColor DarkYellow
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    exit
+}
+
+Write-Host "  [SUCCESS] Steam found!" -ForegroundColor Green
+Write-Host "  Location: $steamPath" -ForegroundColor White
+Write-Host ""
+
+# Step 1: Kill all Steam processes
+Write-Host "Step 1: Killing all Steam processes..." -ForegroundColor Yellow
+$steamProcesses = Get-Process -Name "steam*" -ErrorAction SilentlyContinue
+if ($steamProcesses) {
+    foreach ($proc in $steamProcesses) {
+        try {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "  [INFO] Killed process: $($proc.Name) (PID: $($proc.Id))" -ForegroundColor Gray
+        } catch {
+            Write-Host "  [WARNING] Could not kill process: $($proc.Name)" -ForegroundColor Yellow
+        }
+    }
+    Start-Sleep -Seconds 2
+    Write-Host "  [SUCCESS] All Steam processes terminated" -ForegroundColor Green
 } else {
-    Log "OK" "Restarting Steam and toggling the plugin on"
+    Write-Host "  [INFO] No Steam processes found running" -ForegroundColor Cyan
 }
 
-# Toggle the plugin on (restarts steam)
-try {
-    Start-Process "steam://millennium/settings/plugins/enable/$name" -ErrorAction Stop
-    Log "OK" "Steam should now restart. Plugin should be enabled after Steam restarts! Enjoy! If you paid for this you got scammed btw discord.gg/luatools"
-} catch {
-    Log "WARN" "Could not launch Steam protocol handler. Please manually enable the plugin in Steam settings."
-    Log "INFO" "Plugin files are located at: $pluginPath"
+# Delete steam.cfg if present
+$steamCfgPath = Join-Path $steamPath "steam.cfg"
+if (Test-Path $steamCfgPath) {
+    try {
+        Remove-Item -Path $steamCfgPath -Force -ErrorAction Stop
+        Write-Host "  [INFO] Removed existing steam.cfg file" -ForegroundColor Gray
+    } catch {
+        Write-Host "  [WARNING] Could not remove steam.cfg: $_" -ForegroundColor Yellow
+    }
 }
+Write-Host ""
+
+# Step 2: Download and extract Steam x32 Latest Build
+Write-Host "Step 2: Downloading and extracting Steam x32 Latest Build..." -ForegroundColor Yellow
+$steamZipUrl = "http://files.luatools.work/OneOffFiles/latest32bitsteam.zip"
+$tempSteamZip = Join-Path $env:TEMP "latest32bitsteam.zip"
+
+try {
+    Write-Host "  Downloading from: $steamZipUrl" -ForegroundColor Gray
+    Download-FileWithProgress -Url $steamZipUrl -OutFile $tempSteamZip
+    Write-Host "  [SUCCESS] Download complete" -ForegroundColor Green
+    
+    Write-Host "  Extracting to: $steamPath" -ForegroundColor Gray
+    Expand-ArchiveWithProgress -ZipPath $tempSteamZip -DestinationPath $steamPath
+    Write-Host "  [SUCCESS] Extraction complete" -ForegroundColor Green
+    
+    # Clean up temp file
+    Remove-Item -Path $tempSteamZip -Force -ErrorAction SilentlyContinue
+    Write-Host ""
+} catch {
+    Write-Host "  [ERROR] Failed to download or extract: $_" -ForegroundColor Red
+    Write-Host "  Continuing anyway..." -ForegroundColor Yellow
+    Write-Host ""
+}
+
+# Step 3: Download and extract zip file (only if millennium.dll is present - to replace it)
+Write-Host "Step 3: Checking for Millennium build..." -ForegroundColor Yellow
+$millenniumDll = Join-Path $steamPath "millennium.dll"
+
+if (Test-Path $millenniumDll) {
+    Write-Host "  [INFO] millennium.dll found, downloading and extracting to replace it..." -ForegroundColor Yellow
+    Write-Host "  Location: $millenniumDll" -ForegroundColor White
+    $zipUrl = "http://files.luatools.work/OneOffFiles/luatoolsmilleniumbuild.zip"
+    $tempZip = Join-Path $env:TEMP "luatoolsmilleniumbuild.zip"
+
+    try {
+        Write-Host "  Downloading from: $zipUrl" -ForegroundColor Gray
+        Download-FileWithProgress -Url $zipUrl -OutFile $tempZip
+        Write-Host "  [SUCCESS] Download complete" -ForegroundColor Green
+        
+        Write-Host "  Extracting to: $steamPath" -ForegroundColor Gray
+        Expand-ArchiveWithProgress -ZipPath $tempZip -DestinationPath $steamPath
+        Write-Host "  [SUCCESS] Extraction complete" -ForegroundColor Green
+        
+        # Clean up temp file
+        Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue
+        Write-Host ""
+    } catch {
+        Write-Host "  [ERROR] Failed to download or extract: $_" -ForegroundColor Red
+        Write-Host "  Continuing anyway..." -ForegroundColor Yellow
+        Write-Host ""
+    }
+} else {
+    Write-Host "  [INFO] millennium.dll not found, skipping download and extraction" -ForegroundColor Cyan
+    Write-Host ""
+}
+
+# Step 4: Create steam.cfg file
+Write-Host "Step 4: Creating steam.cfg file..." -ForegroundColor Yellow
+$steamCfgPath = Join-Path $steamPath "steam.cfg"
+
+# Create config file using echo commands as specified
+$cfgContent = "BootStrapperInhibitAll=enable`nBootStrapperForceSelfUpdate=disable"
+Set-Content -Path $steamCfgPath -Value $cfgContent -Force
+Write-Host "  [SUCCESS] steam.cfg created!" -ForegroundColor Green
+Write-Host "  Location: $steamCfgPath" -ForegroundColor White
+Write-Host ""
+
+# Step 5: Launch Steam
+Write-Host "Step 5: Launching Steam..." -ForegroundColor Yellow
+$arguments = @("-clearbeta")
+Write-Host "  Executable: $steamExePath" -ForegroundColor Gray
+Write-Host "  Arguments: $($arguments -join ' ')" -ForegroundColor Gray
+Write-Host ""
+
+try {
+    $process = Start-Process -FilePath $steamExePath -ArgumentList $arguments -PassThru -WindowStyle Normal
+    
+    Write-Host "  [SUCCESS] Steam launched successfully!" -ForegroundColor Green
+    Write-Host "  Process ID: $($process.Id)" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Steam is now running with the config file." -ForegroundColor White
+    Write-Host ""
+    
+} catch {
+    Write-Host "  [ERROR] Failed to start Steam: $_" -ForegroundColor Red
+    Write-Host ""
+}
+
+# ASCII Art
+Write-Host ""
+Write-Host '                 _...Q._' -ForegroundColor Cyan
+Write-Host '               .''       ''.' -ForegroundColor Cyan
+Write-Host '              /           \' -ForegroundColor Cyan
+Write-Host '             ;.-""--.._ |' -ForegroundColor Cyan
+Write-Host '            /''-._____..-''\|' -ForegroundColor Cyan
+Write-Host '          .'' ;  o   o    |`;' -ForegroundColor Cyan
+Write-Host '         /  /|   ()      ;  \' -ForegroundColor Cyan
+Write-Host '    _.-, ''-'' ; ''.__.-''    \  \' -ForegroundColor Cyan
+Write-Host '.-"`,  |      \_         / `''`' -ForegroundColor Cyan
+Write-Host ' ''._`.; ._    / `''--.,_=-;_' -ForegroundColor Cyan
+Write-Host '    \ \|  `\ .\_     /`  \ `._' -ForegroundColor Cyan
+Write-Host '     \ \    `/  ``---|    \   (~' -ForegroundColor Cyan
+Write-Host '      \ \.  | o   ,   \    (~ (~  ______________' -ForegroundColor Cyan
+Write-Host '       \ \`_\ _..-''    \  (\(~   |.------------.|' -ForegroundColor Cyan
+Write-Host '        \/  ``        / \(~/     || ALL DONE!! ||' -ForegroundColor Cyan
+Write-Host '         \__    __..-'' -   ''.    || """"  """" ||' -ForegroundColor Cyan
+Write-Host '          \ \```             \   || discord.gg ||' -ForegroundColor Cyan
+Write-Host '          ;\ \o               ;  || /luatools  ||' -ForegroundColor Cyan
+Write-Host '          | \ \               |  ||____________||' -ForegroundColor Cyan
+Write-Host '          ;  \ \              ;  ''------..------''' -ForegroundColor Cyan
+Write-Host '           \  \ \ _.-''\      /          ||' -ForegroundColor Cyan
+Write-Host '            ''. \-''     \   .''           ||' -ForegroundColor Cyan
+Write-Host '           _.-"  ''      \-''           .-||-.' -ForegroundColor Cyan
+Write-Host '           \ ''  '' ''      \           ''..---.- ''' -ForegroundColor Cyan
+Write-Host '            \  '' ''      _.'' ' -ForegroundColor Cyan
+Write-Host '             \'' ''   _.-''' -ForegroundColor Cyan
+Write-Host '              \ _.-''' -ForegroundColor Cyan
+Write-Host '               `' -ForegroundColor Cyan
+Write-Host ""
+
+# Pause before closing
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
