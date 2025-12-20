@@ -56,12 +56,26 @@ function Download-FileWithProgress {
     )
     
     try {
-        $request = [System.Net.HttpWebRequest]::Create($Url)
+        # Add cache-busting to prevent PowerShell cache
+        $cacheBustUrl = $Url
+        if ($Url -notmatch '\?') {
+            $cacheBustUrl = "$Url?t=$(Get-Date -Format 'yyyyMMddHHmmss')"
+        } else {
+            $cacheBustUrl = "$Url&t=$(Get-Date -Format 'yyyyMMddHHmmss')"
+        }
+        
+        $request = [System.Net.HttpWebRequest]::Create($cacheBustUrl)
+        $request.CachePolicy = New-Object System.Net.Cache.RequestCachePolicy([System.Net.Cache.RequestCacheLevel]::NoCacheNoStore)
+        $request.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
+        $request.Headers.Add("Pragma", "no-cache")
         $response = $request.GetResponse()
         $totalLength = $response.ContentLength
         $response.Close()
         
-        $request = [System.Net.HttpWebRequest]::Create($Url)
+        $request = [System.Net.HttpWebRequest]::Create($cacheBustUrl)
+        $request.CachePolicy = New-Object System.Net.Cache.RequestCachePolicy([System.Net.Cache.RequestCacheLevel]::NoCacheNoStore)
+        $request.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
+        $request.Headers.Add("Pragma", "no-cache")
         $response = $request.GetResponse()
         $responseStream = $response.GetResponseStream()
         $targetStream = New-Object -TypeName System.IO.FileStream -ArgumentList $OutFile, Create
@@ -251,27 +265,36 @@ Write-Host "  [SUCCESS] steam.cfg created!" -ForegroundColor Green
 Write-Host "  Location: $steamCfgPath" -ForegroundColor White
 Write-Host ""
 
-# Step 3: Download and extract zip file
-Write-Host "Step 3: Downloading and extracting Millennium build..." -ForegroundColor Yellow
-$zipUrl = "http://files.luatools.work/OneOffFiles/luatoolsmilleniumbuild.zip"
-$tempZip = Join-Path $env:TEMP "luatoolsmilleniumbuild.zip"
+# Step 3: Download and extract zip file (only if millennium.dll is missing)
+Write-Host "Step 3: Checking for Millennium build..." -ForegroundColor Yellow
+$millenniumDll = Join-Path $steamPath "millennium.dll"
 
-try {
-    Write-Host "  Downloading from: $zipUrl" -ForegroundColor Gray
-    Download-FileWithProgress -Url $zipUrl -OutFile $tempZip
-    Write-Host "  [SUCCESS] Download complete" -ForegroundColor Green
-    
-    Write-Host "  Extracting to: $steamPath" -ForegroundColor Gray
-    Expand-ArchiveWithProgress -ZipPath $tempZip -DestinationPath $steamPath
-    Write-Host "  [SUCCESS] Extraction complete" -ForegroundColor Green
-    
-    # Clean up temp file
-    Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue
+if (Test-Path $millenniumDll) {
+    Write-Host "  [INFO] millennium.dll already present, skipping download and extraction" -ForegroundColor Cyan
+    Write-Host "  Location: $millenniumDll" -ForegroundColor White
     Write-Host ""
-} catch {
-    Write-Host "  [ERROR] Failed to download or extract: $_" -ForegroundColor Red
-    Write-Host "  Continuing anyway..." -ForegroundColor Yellow
-    Write-Host ""
+} else {
+    Write-Host "  [INFO] millennium.dll not found, downloading and extracting..." -ForegroundColor Yellow
+    $zipUrl = "http://files.luatools.work/OneOffFiles/luatoolsmilleniumbuild.zip"
+    $tempZip = Join-Path $env:TEMP "luatoolsmilleniumbuild.zip"
+
+    try {
+        Write-Host "  Downloading from: $zipUrl" -ForegroundColor Gray
+        Download-FileWithProgress -Url $zipUrl -OutFile $tempZip
+        Write-Host "  [SUCCESS] Download complete" -ForegroundColor Green
+        
+        Write-Host "  Extracting to: $steamPath" -ForegroundColor Gray
+        Expand-ArchiveWithProgress -ZipPath $tempZip -DestinationPath $steamPath
+        Write-Host "  [SUCCESS] Extraction complete" -ForegroundColor Green
+        
+        # Clean up temp file
+        Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue
+        Write-Host ""
+    } catch {
+        Write-Host "  [ERROR] Failed to download or extract: $_" -ForegroundColor Red
+        Write-Host "  Continuing anyway..." -ForegroundColor Yellow
+        Write-Host ""
+    }
 }
 
 # Step 4: Launch Steam
