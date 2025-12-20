@@ -12,6 +12,27 @@ Write-Host "Steam 32-bit Downgrader - by discord.gg/luatools (join for fun)" -Fo
 Write-Host "===============================================================" -ForegroundColor DarkYellow
 Write-Host ""
 
+# Ensure temp directory exists (fix for systems where $env:TEMP points to non-existent directory)
+if (-not $env:TEMP -or -not (Test-Path $env:TEMP)) {
+    # Fallback to user's AppData\Local\Temp
+    if ($env:LOCALAPPDATA -and (Test-Path $env:LOCALAPPDATA)) {
+        $env:TEMP = Join-Path $env:LOCALAPPDATA "Temp"
+    }
+    # If still not valid, try last resort
+    if (-not $env:TEMP -or -not (Test-Path $env:TEMP)) {
+        # Last resort: create a temp directory in the script's location or current directory
+        if ($PSScriptRoot) {
+            $env:TEMP = Join-Path $PSScriptRoot "temp"
+        } else {
+            $env:TEMP = Join-Path (Get-Location).Path "temp"
+        }
+    }
+}
+# Ensure the temp directory exists
+if (-not (Test-Path $env:TEMP)) {
+    New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
+}
+
 # Function to get Steam path from registry
 function Get-SteamPath {
     $steamPath = $null
@@ -111,6 +132,7 @@ function Download-FileWithProgress {
         $request.Timeout = -1 # No timeout
         $request.ReadWriteTimeout = -1 # No timeout
         
+        $response = $null
         try {
             $response = $request.GetResponse()
         } catch {
@@ -119,83 +141,99 @@ function Download-FileWithProgress {
             throw "Connection failed during download"
         }
         
-        $responseStream = $response.GetResponseStream()
-        $targetStream = New-Object -TypeName System.IO.FileStream -ArgumentList $OutFile, Create
-        
-        $buffer = New-Object byte[] 10KB
-        $count = $responseStream.Read($buffer, 0, $buffer.Length)
-        $downloadedBytes = $count
-        $lastUpdate = Get-Date
-        $lastBytesDownloaded = $downloadedBytes
-        $lastBytesUpdateTime = Get-Date
-        $stuckTimeoutSeconds = 60 # 1 minute timeout for stuck downloads
-        
-        while ($count -gt 0) {
-            $targetStream.Write($buffer, 0, $count)
+        try {
+            # Ensure the output directory exists
+            $outDir = Split-Path $OutFile -Parent
+            if ($outDir -and -not (Test-Path $outDir)) {
+                New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+            }
+            
+            $responseStream = $null
+            $targetStream = $null
+            $responseStream = $response.GetResponseStream()
+            $targetStream = New-Object -TypeName System.IO.FileStream -ArgumentList $OutFile, Create
+            
+            $buffer = New-Object byte[] 10KB
             $count = $responseStream.Read($buffer, 0, $buffer.Length)
-            $downloadedBytes += $count
+            $downloadedBytes = $count
+            $lastUpdate = Get-Date
+            $lastBytesDownloaded = $downloadedBytes
+            $lastBytesUpdateTime = Get-Date
+            $stuckTimeoutSeconds = 60 # 1 minute timeout for stuck downloads
             
-            # Check if download is stuck (no progress for 1 minute)
-            $now = Get-Date
-            if ($downloadedBytes -gt $lastBytesDownloaded) {
-                # Bytes increased, reset stuck timer
-                $lastBytesDownloaded = $downloadedBytes
-                $lastBytesUpdateTime = $now
-            } else {
-                # No bytes downloaded, check if stuck
-                $timeSinceLastBytes = ($now - $lastBytesUpdateTime).TotalSeconds
-                if ($timeSinceLastBytes -ge $stuckTimeoutSeconds) {
-                    $targetStream.Close()
-                    $responseStream.Close()
-                    $response.Close()
-                    if (Test-Path $OutFile) {
-                        Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
-                    }
-                    Write-Host ""
-                    Write-Host "  [ERROR] Download appears stuck (0 kbps for $stuckTimeoutSeconds seconds)" -ForegroundColor Red
-                    Write-Host "  [ERROR] Downloaded: $downloadedBytes bytes, Expected: $totalLength bytes" -ForegroundColor Red
-                    throw "Download stalled - no data received for $stuckTimeoutSeconds seconds"
-                }
-            }
-            
-            # Update progress every 100ms to avoid too frequent updates
-            if (($now - $lastUpdate).TotalMilliseconds -ge 100) {
-                if ($totalLength -gt 0) {
-                    $percentComplete = [math]::Round(($downloadedBytes / $totalLength) * 100, 2)
-                    $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
-                    $totalMB = [math]::Round($totalLength / 1MB, 2)
-                    
-                    # Update progress on same line
-                    $progressBarLength = [math]::Floor($percentComplete / 2)
-                    $progressBar = "=" * $progressBarLength
-                    $progressBar = $progressBar.PadRight(50)
-                    Write-Host "`r  Progress: [$progressBar] $percentComplete% ($downloadedMB MB / $totalMB MB)" -NoNewline -ForegroundColor Cyan
+            while ($count -gt 0) {
+                $targetStream.Write($buffer, 0, $count)
+                $count = $responseStream.Read($buffer, 0, $buffer.Length)
+                $downloadedBytes += $count
+                
+                # Check if download is stuck (no progress for 1 minute)
+                $now = Get-Date
+                if ($downloadedBytes -gt $lastBytesDownloaded) {
+                    # Bytes increased, reset stuck timer
+                    $lastBytesDownloaded = $downloadedBytes
+                    $lastBytesUpdateTime = $now
                 } else {
-                    # Show bytes downloaded if total length unknown
-                    $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
-                    Write-Host "`r  Progress: Downloaded $downloadedMB MB..." -NoNewline -ForegroundColor Cyan
+                    # No bytes downloaded, check if stuck
+                    $timeSinceLastBytes = ($now - $lastBytesUpdateTime).TotalSeconds
+                    if ($timeSinceLastBytes -ge $stuckTimeoutSeconds) {
+                        # Clean up partial file - streams will be closed in finally block
+                        if (Test-Path $OutFile) {
+                            Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+                        }
+                        Write-Host ""
+                        Write-Host "  [ERROR] Download appears stuck (0 kbps for $stuckTimeoutSeconds seconds)" -ForegroundColor Red
+                        Write-Host "  [ERROR] Downloaded: $downloadedBytes bytes, Expected: $totalLength bytes" -ForegroundColor Red
+                        throw "Download stalled - no data received for $stuckTimeoutSeconds seconds"
+                    }
                 }
-                $lastUpdate = $now
+                
+                # Update progress every 100ms to avoid too frequent updates
+                if (($now - $lastUpdate).TotalMilliseconds -ge 100) {
+                    if ($totalLength -gt 0) {
+                        $percentComplete = [math]::Round(($downloadedBytes / $totalLength) * 100, 2)
+                        $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
+                        $totalMB = [math]::Round($totalLength / 1MB, 2)
+                        
+                        # Update progress on same line
+                        $progressBarLength = [math]::Floor($percentComplete / 2)
+                        $progressBar = "=" * $progressBarLength
+                        $progressBar = $progressBar.PadRight(50)
+                        Write-Host "`r  Progress: [$progressBar] $percentComplete% ($downloadedMB MB / $totalMB MB)" -NoNewline -ForegroundColor Cyan
+                    } else {
+                        # Show bytes downloaded if total length unknown
+                        $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
+                        Write-Host "`r  Progress: Downloaded $downloadedMB MB..." -NoNewline -ForegroundColor Cyan
+                    }
+                    $lastUpdate = $now
+                }
+            }
+            
+            # Final update to show 100%
+            if ($totalLength -gt 0) {
+                $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
+                $totalMB = [math]::Round($totalLength / 1MB, 2)
+                $progressBar = "=" * 50
+                Write-Host "`r  Progress: [$progressBar] 100.00% ($downloadedMB MB / $totalMB MB)" -NoNewline -ForegroundColor Cyan
+            } else {
+                $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
+                Write-Host "`r  Progress: Downloaded $downloadedMB MB... Complete!" -NoNewline -ForegroundColor Cyan
+            }
+            
+            Write-Host "" # New line after progress
+            
+            return $true
+        } finally {
+            # Always close streams, even if an error occurs
+            if ($targetStream) {
+                $targetStream.Close()
+            }
+            if ($responseStream) {
+                $responseStream.Close()
+            }
+            if ($response) {
+                $response.Close()
             }
         }
-        
-        # Final update to show 100%
-        if ($totalLength -gt 0) {
-            $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
-            $totalMB = [math]::Round($totalLength / 1MB, 2)
-            $progressBar = "=" * 50
-            Write-Host "`r  Progress: [$progressBar] 100.00% ($totalMB MB / $totalMB MB)" -NoNewline -ForegroundColor Cyan
-        } else {
-            $downloadedMB = [math]::Round($downloadedBytes / 1MB, 2)
-            Write-Host "`r  Progress: Downloaded $downloadedMB MB... Complete!" -NoNewline -ForegroundColor Cyan
-        }
-        
-        Write-Host "" # New line after progress
-        $targetStream.Close()
-        $responseStream.Close()
-        $response.Close()
-        
-        return $true
     } catch {
         Write-Host ""
         Write-Host "  [ERROR] Download failed: $_" -ForegroundColor Red
@@ -223,13 +261,15 @@ function Download-AndExtractWithFallback {
     $lastError = $null
     
     foreach ($url in $urls) {
+        # Determine if this is the fallback URL before try block (so it's available in catch)
+        $isFallback = ($url -eq $FallbackUrl)
+        
         try {
             # Clean up any existing temp file
             if (Test-Path $TempZipPath) {
                 Remove-Item -Path $TempZipPath -Force -ErrorAction SilentlyContinue
             }
             
-            $isFallback = ($url -eq $FallbackUrl)
             if ($isFallback) {
                 Write-Host "  [INFO] Primary download failed, trying fallback URL..." -ForegroundColor Yellow
             }
@@ -274,7 +314,11 @@ function Download-AndExtractWithFallback {
     }
     
     # Should never reach here, but just in case
-    throw $lastError
+    if ($lastError) {
+        throw $lastError
+    } else {
+        throw "Download failed for unknown reason"
+    }
 }
 
 # Function to extract archive with inline progress bar
@@ -298,20 +342,27 @@ function Expand-ArchiveWithProgress {
         }
         
         # Check if file starts with ZIP signature (PK header)
-        $zipStream = [System.IO.File]::OpenRead($ZipPath)
-        $header = New-Object byte[] 4
-        $bytesRead = $zipStream.Read($header, 0, 4)
-        $zipStream.Close()
-        
-        if ($bytesRead -lt 4 -or $header[0] -ne 0x50 -or $header[1] -ne 0x4B) {
-            Write-Host "  [ERROR] File does not appear to be a valid ZIP file (missing PK signature)" -ForegroundColor Red
-            Write-Host "  [ERROR] File size: $($zipFileInfo.Length) bytes" -ForegroundColor Red
-            throw "Invalid ZIP file format"
+        $zipStream = $null
+        try {
+            $zipStream = [System.IO.File]::OpenRead($ZipPath)
+            $header = New-Object byte[] 4
+            $bytesRead = $zipStream.Read($header, 0, 4)
+            
+            if ($bytesRead -lt 4 -or $header[0] -ne 0x50 -or $header[1] -ne 0x4B) {
+                Write-Host "  [ERROR] File does not appear to be a valid ZIP file (missing PK signature)" -ForegroundColor Red
+                Write-Host "  [ERROR] File size: $($zipFileInfo.Length) bytes" -ForegroundColor Red
+                throw "Invalid ZIP file format"
+            }
+        } finally {
+            if ($zipStream) {
+                $zipStream.Close()
+            }
         }
         
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         
         # Try to open the ZIP file - this will fail if corrupted
+        $zip = $null
         try {
             $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
         } catch {
@@ -320,57 +371,68 @@ function Expand-ArchiveWithProgress {
             Write-Host "  [ERROR] Error: $($_.Exception.Message)" -ForegroundColor Red
             throw "ZIP file is corrupted - download may have been interrupted. Please try again."
         }
-        $entries = $zip.Entries
         
-        # Count only files (exclude directories)
-        $fileEntries = @()
-        foreach ($entry in $entries) {
-            if (-not ($entry.FullName.EndsWith('\') -or $entry.FullName.EndsWith('/'))) {
-                $fileEntries += $entry
+        try {
+            $entries = $zip.Entries
+            
+            # Count only files (exclude directories)
+            $fileEntries = @()
+            foreach ($entry in $entries) {
+                if (-not ($entry.FullName.EndsWith('\') -or $entry.FullName.EndsWith('/'))) {
+                    $fileEntries += $entry
+                }
+            }
+            $totalFiles = $fileEntries.Count
+            if ($totalFiles -eq 0) {
+                Write-Host "  [WARNING] ZIP file contains no files (only directories)" -ForegroundColor Yellow
+                return $true
+            }
+            $extractedCount = 0
+            $lastUpdate = Get-Date
+            
+            foreach ($entry in $entries) {
+                $entryPath = Join-Path $DestinationPath $entry.FullName
+                
+                # Create directory if it doesn't exist
+                $entryDir = Split-Path $entryPath -Parent
+                if ($entryDir -and -not (Test-Path $entryDir)) {
+                    New-Item -ItemType Directory -Path $entryDir -Force | Out-Null
+                }
+                
+                # Skip if entry is a directory
+                if ($entry.FullName.EndsWith('\') -or $entry.FullName.EndsWith('/')) {
+                    continue
+                }
+                
+                # Extract the file
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $entryPath, $true)
+                $extractedCount++
+                
+                # Update progress every 50ms
+                $now = Get-Date
+                if (($now - $lastUpdate).TotalMilliseconds -ge 50) {
+                    $percentComplete = [math]::Round(($extractedCount / $totalFiles) * 100, 2)
+                    $progressBarLength = [math]::Floor($percentComplete / 2)
+                    $progressBar = "=" * $progressBarLength
+                    $progressBar = $progressBar.PadRight(50)
+                    Write-Host "`r  Progress: [$progressBar] $percentComplete% ($extractedCount / $totalFiles files)" -NoNewline -ForegroundColor Cyan
+                    $lastUpdate = $now
+                }
+            }
+            
+            # Final update to show 100%
+            $progressBar = "=" * 50
+            Write-Host "`r  Progress: [$progressBar] 100.00% ($totalFiles / $totalFiles files)" -NoNewline -ForegroundColor Cyan
+            
+            Write-Host "" # New line after progress
+            
+            return $true
+        } finally {
+            # Always dispose the ZIP file, even if an error occurs
+            if ($zip) {
+                $zip.Dispose()
             }
         }
-        $totalFiles = $fileEntries.Count
-        $extractedCount = 0
-        $lastUpdate = Get-Date
-        
-        foreach ($entry in $entries) {
-            $entryPath = Join-Path $DestinationPath $entry.FullName
-            
-            # Create directory if it doesn't exist
-            $entryDir = Split-Path $entryPath -Parent
-            if ($entryDir -and -not (Test-Path $entryDir)) {
-                New-Item -ItemType Directory -Path $entryDir -Force | Out-Null
-            }
-            
-            # Skip if entry is a directory
-            if ($entry.FullName.EndsWith('\') -or $entry.FullName.EndsWith('/')) {
-                continue
-            }
-            
-            # Extract the file
-            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $entryPath, $true)
-            $extractedCount++
-            
-            # Update progress every 50ms
-            $now = Get-Date
-            if (($now - $lastUpdate).TotalMilliseconds -ge 50) {
-                $percentComplete = [math]::Round(($extractedCount / $totalFiles) * 100, 2)
-                $progressBarLength = [math]::Floor($percentComplete / 2)
-                $progressBar = "=" * $progressBarLength
-                $progressBar = $progressBar.PadRight(50)
-                Write-Host "`r  Progress: [$progressBar] $percentComplete% ($extractedCount / $totalFiles files)" -NoNewline -ForegroundColor Cyan
-                $lastUpdate = $now
-            }
-        }
-        
-        # Final update to show 100%
-        $progressBar = "=" * 50
-        Write-Host "`r  Progress: [$progressBar] 100.00% ($totalFiles / $totalFiles files)" -NoNewline -ForegroundColor Cyan
-        
-        Write-Host "" # New line after progress
-        $zip.Dispose()
-        
-        return $true
     } catch {
         Write-Host ""
         throw $_
