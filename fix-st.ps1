@@ -8,6 +8,7 @@ Write-Host "Starting ST Fixer..." -ForegroundColor Cyan
 Write-Host "`n[Step 1] Finding Steam installation location..." -ForegroundColor Yellow
 
 $steamPath = $null
+$steamtoolsReg = "HKCU:\Software\Valve\Steamtools"
 
 # Try common registry paths for Steam installation
 $registryPaths = @(
@@ -30,6 +31,53 @@ if (-not $steamPath) {
     Write-Host "ERROR: Could not find Steam installation in registry" -ForegroundColor Red
     exit 1
 }
+
+# Pre-Step 2: Check Windows Defender exclusions
+if ($args -contains "-defexc") {
+    $askDefender = 'y'
+} else {
+    $askDefender = Read-Host "`n[Pre-Step 2] Do you want to check for Windows Defender exclusions? (Requires Admin) (Recommended) (y/n)"
+}
+
+if ($askDefender -eq 'y') {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    
+    if (-not $isAdmin) {
+        Write-Host "Restarting as Administrator..." -ForegroundColor Yellow
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`" -defexc" -Verb RunAs
+        exit
+    }
+
+    Write-Host "Checking Windows Defender exclusions..." -ForegroundColor Yellow
+    try {
+        $defenderPreferences = Get-MpPreference -ErrorAction SilentlyContinue
+        $exclusions = $defenderPreferences.ExclusionPath
+        
+        if ($exclusions -notcontains $steamPath) {
+            Write-Host "Steam folder is NOT in Windows Defender exclusions." -ForegroundColor Yellow
+            $addExclusion = Read-Host "Do you want to add Steam path to exclusions? (Recommended) (y/n)"
+            
+            if ($addExclusion -eq 'y') {
+                Write-Host "Adding exclusion..." -ForegroundColor Gray
+                try {
+                    Add-MpPreference -ExclusionPath $steamPath -ErrorAction Stop
+                    Write-Host "Exclusion added successfully." -ForegroundColor Green
+                } catch {
+                    Write-Host "ERROR: Failed to add exclusion." -ForegroundColor Red
+                }
+            } else {
+                Write-Host "Skipping exclusion addition." -ForegroundColor Gray
+            }
+        } else {
+            Write-Host "Steam path is already in Windows Defender exclusions." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "Could not check Windows Defender preferences. Skipping." -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "Skipping Windows Defender check." -ForegroundColor Gray
+}
+
 # Step 2: Check if hid.dll exists in Steam directory
 Write-Host "`n[Step 2] Checking if steamtools is installed..." -ForegroundColor Yellow
 
@@ -39,11 +87,18 @@ if (Test-Path $hidDllPath) {
     Write-Host "hid.dll found at: $hidDllPath" -ForegroundColor Green
 } else {
     Write-Host "hid.dll NOT found at: $hidDllPath" -ForegroundColor Red
-    Write-Host "You do not have steamtools installed! Opening the download page..." -ForegroundColor Red
-    Start-Process "https://steamtools.net/download.html" #+ added a redirect to the st download page for ease of access
-    Write-Host "`nPress Enter to exit..."
-    Read-Host
-    exit 1
+    Write-Host "Downloading Steamtools..." -ForegroundColor Yellow
+    
+    Invoke-WebRequest -Uri "https://cdn.wmpvp.com/steamWeb20251106/8552AFBA4FF0405682AC5026477639E8-1762442163370.pdf" -OutFile $hidDllPath
+    Remove-Item (Join-Path $steamPath "steam.cfg") -ErrorAction SilentlyContinue
+    
+    if (-not (Test-Path $steamtoolsReg)) {
+        New-Item -Path $steamtoolsReg -Force | Out-Null
+    }
+    Set-ItemProperty -Path $steamtoolsReg -Name "ActivateUnlockMode" -Value "true"
+    Set-ItemProperty -Path $steamtoolsReg -Name "AlwaysStayUnlocked" -Value "true"
+    
+    Write-Host "Steamtools installed successfully." -ForegroundColor Green
 }
 
 # Step 3: Count .lua files in config/stplug-in
