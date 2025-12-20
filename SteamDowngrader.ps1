@@ -204,10 +204,8 @@ function Download-FileWithProgress {
             Write-Host "  [ERROR] Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
         }
         Write-Host ""
-        Write-Host "Script execution stopped due to download error." -ForegroundColor Red
-        Write-Host "Press any key to exit..." -ForegroundColor Yellow
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-        exit 1
+        # Throw exception instead of exiting - let caller handle it (fallback function or main script)
+        throw $_
     }
 }
 
