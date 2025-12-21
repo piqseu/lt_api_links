@@ -33,6 +33,37 @@ if (-not (Test-Path $env:TEMP)) {
     New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
 }
 
+# Function to pause script and explain error
+function Stop-OnError {
+    param(
+        [string]$ErrorMessage,
+        [string]$ErrorDetails = "",
+        [string]$StepName = ""
+    )
+    
+    Write-Host ""
+    Write-Host "===============================================================" -ForegroundColor Red
+    Write-Host "ERROR OCCURRED" -ForegroundColor Red
+    if ($StepName) {
+        Write-Host "Step: $StepName" -ForegroundColor Yellow
+    }
+    Write-Host "===============================================================" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Error Message: $ErrorMessage" -ForegroundColor Red
+    if ($ErrorDetails) {
+        Write-Host ""
+        Write-Host "Details: $ErrorDetails" -ForegroundColor Yellow
+    }
+    Write-Host ""
+    Write-Host "The script cannot continue due to this error." -ForegroundColor Yellow
+    Write-Host "Please resolve the issue and try again." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "===============================================================" -ForegroundColor Red
+    Write-Host "Exiting..." -ForegroundColor Red
+    Write-Host "===============================================================" -ForegroundColor Red
+    exit 1
+}
+
 # Function to get Steam path from registry
 function Get-SteamPath {
     $steamPath = $null
@@ -113,14 +144,15 @@ function Download-FileWithProgress {
             throw "Server returned status code $statusCode instead of 200"
         }
         
-        # Check content length
+        # Check content length (some servers return -1 for unknown length, which is acceptable)
         $totalLength = $response.ContentLength
-        if ($totalLength -le 0) {
+        if ($totalLength -eq 0) {
             $response.Close()
-            Write-Host "  [ERROR] Invalid content length: $totalLength (expected > 0)" -ForegroundColor Red
+            Write-Host "  [ERROR] Invalid content length: $totalLength (expected > 0 or -1 for unknown)" -ForegroundColor Red
             Write-Host "  [ERROR] URL: $cacheBustUrl" -ForegroundColor Red
-            throw "Server did not return valid content length"
+            throw "Server returned zero content length"
         }
+        # If ContentLength is -1, we'll handle it in the download loop (unknown size)
         
         $response.Close()
         
@@ -153,7 +185,7 @@ function Download-FileWithProgress {
             $responseStream = $response.GetResponseStream()
             $targetStream = New-Object -TypeName System.IO.FileStream -ArgumentList $OutFile, Create
             
-            $buffer = New-Object byte[] 10KB
+            $buffer = New-Object byte[] (10 * 1024)  # 10KB buffer
             $count = $responseStream.Read($buffer, 0, $buffer.Length)
             $downloadedBytes = $count
             $lastUpdate = Get-Date
@@ -391,7 +423,24 @@ function Expand-ArchiveWithProgress {
             $lastUpdate = Get-Date
             
             foreach ($entry in $entries) {
-                $entryPath = Join-Path $DestinationPath $entry.FullName
+                # Sanitize entry path to prevent path traversal attacks
+                $sanitizedPath = $entry.FullName
+                # Remove leading slashes/backslashes and normalize path separators
+                $sanitizedPath = $sanitizedPath.TrimStart('\', '/')
+                # Replace any remaining absolute path indicators
+                $sanitizedPath = $sanitizedPath -replace '^[A-Z]:\\', '' -replace '^/', ''
+                # Normalize path separators to backslashes for Windows
+                $sanitizedPath = $sanitizedPath -replace '/', '\'
+                
+                $entryPath = Join-Path $DestinationPath $sanitizedPath
+                
+                # Additional safety check: ensure the resolved path is still within destination
+                $resolvedEntryPath = [System.IO.Path]::GetFullPath($entryPath)
+                $resolvedDestination = [System.IO.Path]::GetFullPath($DestinationPath)
+                if (-not $resolvedEntryPath.StartsWith($resolvedDestination, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    Write-Host "  [WARNING] Skipping potentially dangerous path: $($entry.FullName)" -ForegroundColor Yellow
+                    continue
+                }
                 
                 # Create directory if it doesn't exist
                 $entryDir = Split-Path $entryPath -Parent
@@ -405,8 +454,20 @@ function Expand-ArchiveWithProgress {
                 }
                 
                 # Extract the file
-                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $entryPath, $true)
-                $extractedCount++
+                try {
+                    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $entryPath, $true)
+                    $extractedCount++
+                } catch {
+                    # If file is locked, provide more helpful error message
+                    if ($_.Exception.Message -match "being used by another process|locked|access.*denied") {
+                        Write-Host ""
+                        Write-Host "  [ERROR] Cannot extract $($entry.FullName) - file is locked or in use" -ForegroundColor Red
+                        Write-Host "  [ERROR] Please close any programs using this file and try again" -ForegroundColor Red
+                        throw "File locked: $($entry.FullName)"
+                    } else {
+                        throw
+                    }
+                }
                 
                 # Update progress every 50ms
                 $now = Get-Date
@@ -449,9 +510,8 @@ if (-not $steamPath) {
     Write-Host "  Please ensure Steam is installed on your system." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "===============================================================" -ForegroundColor DarkYellow
-    Write-Host "Process completed. Press any key to exit..." -ForegroundColor Green
+    Write-Host "Exiting..." -ForegroundColor Green
     Write-Host "===============================================================" -ForegroundColor DarkYellow
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit
 }
 
@@ -462,9 +522,8 @@ if (-not (Test-Path $steamExePath)) {
     Write-Host "  The Steam directory exists but Steam.exe is missing." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "===============================================================" -ForegroundColor DarkYellow
-    Write-Host "Process completed. Press any key to exit..." -ForegroundColor Green
+    Write-Host "Exiting..." -ForegroundColor Green
     Write-Host "===============================================================" -ForegroundColor DarkYellow
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit
 }
 
@@ -474,32 +533,164 @@ Write-Host ""
 
 # Step 1: Kill all Steam processes
 Write-Host "Step 1: Killing all Steam processes..." -ForegroundColor Yellow
-$steamProcesses = Get-Process -Name "steam*" -ErrorAction SilentlyContinue
-if ($steamProcesses) {
-    foreach ($proc in $steamProcesses) {
+
+# Function to kill Steam processes with retry and verification
+function Stop-SteamProcesses {
+    $maxAttempts = 3
+    $attempt = 0
+    
+    # First, try to stop SteamService as a Windows service (if it exists)
+    $steamServiceNames = @("Steam Client Service", "SteamService", "Steam")
+    
+    foreach ($serviceName in $steamServiceNames) {
         try {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            Write-Host "  [INFO] Killed process: $($proc.Name) (PID: $($proc.Id))" -ForegroundColor Gray
+            $steamService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+            if ($steamService -and $steamService.Status -eq 'Running') {
+                Write-Host "  [INFO] Stopping $serviceName..." -ForegroundColor Gray
+                try {
+                    Stop-Service -Name $serviceName -Force -ErrorAction Stop
+                    Write-Host "  [SUCCESS] $serviceName stopped" -ForegroundColor Green
+                    Start-Sleep -Seconds 1
+                    break
+                } catch {
+                    Write-Host "  [WARNING] Could not stop $serviceName (may require administrator privileges): $_" -ForegroundColor Yellow
+                }
+            }
         } catch {
-            Write-Host "  [WARNING] Could not kill process: $($proc.Name)" -ForegroundColor Yellow
+            # Service might not exist or not accessible, try next name
+            continue
         }
     }
-    Start-Sleep -Seconds 2
-    Write-Host "  [SUCCESS] All Steam processes terminated" -ForegroundColor Green
-} else {
-    Write-Host "  [INFO] No Steam processes found running" -ForegroundColor Cyan
+    
+    while ($attempt -lt $maxAttempts) {
+        $attempt++
+        $steamProcesses = Get-Process -Name "steam*" -ErrorAction SilentlyContinue
+        
+        if (-not $steamProcesses) {
+            if ($attempt -eq 1) {
+                Write-Host "  [INFO] No Steam processes found running" -ForegroundColor Cyan
+            }
+            return $true
+        }
+        
+        if ($attempt -gt 1) {
+            Write-Host "  [INFO] Attempt $attempt of $maxAttempts to kill remaining processes..." -ForegroundColor Yellow
+        }
+        
+        foreach ($proc in $steamProcesses) {
+            # Check if this is SteamService - try to stop it as a service first
+            if ($proc.Name -eq "SteamService") {
+                $serviceStoppedInLoop = $false
+                foreach ($serviceName in $steamServiceNames) {
+                    try {
+                        $steamService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+                        if ($steamService -and $steamService.Status -eq 'Running') {
+                            Write-Host "  [INFO] Attempting to stop SteamService as a Windows service ($serviceName)..." -ForegroundColor Gray
+                            Stop-Service -Name $serviceName -Force -ErrorAction Stop
+                            Write-Host "  [SUCCESS] SteamService stopped via service control" -ForegroundColor Green
+                            Start-Sleep -Seconds 1
+                            $serviceStoppedInLoop = $true
+                            break
+                        }
+                    } catch {
+                        # Try next service name
+                        continue
+                    }
+                }
+                if ($serviceStoppedInLoop) {
+                    continue
+                }
+            }
+            
+            try {
+                # Try graceful shutdown first
+                $proc.Kill()
+                Write-Host "  [INFO] Killed process: $($proc.Name) (PID: $($proc.Id))" -ForegroundColor Gray
+            } catch {
+                try {
+                    # Force kill if graceful failed
+                    Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+                    Write-Host "  [INFO] Force-killed process: $($proc.Name) (PID: $($proc.Id))" -ForegroundColor Gray
+                } catch {
+                    # If it's SteamService and we couldn't stop it, provide helpful message
+                    if ($proc.Name -eq "SteamService") {
+                        Write-Host "  [WARNING] Could not kill SteamService (PID: $($proc.Id)) - this is a Windows service" -ForegroundColor Yellow
+                        Write-Host "  [INFO] SteamService may require administrator privileges to stop. The script will continue anyway." -ForegroundColor Yellow
+                    } else {
+                        Write-Host "  [WARNING] Could not kill process: $($proc.Name) (PID: $($proc.Id))" -ForegroundColor Yellow
+                    }
+                }
+            }
+        }
+        
+        # Wait for processes to terminate
+        Start-Sleep -Seconds 2
+        
+        # Clear any previous progress output
+        Write-Host ""
+        
+        # Verify processes are actually gone
+        $remainingProcesses = Get-Process -Name "steam*" -ErrorAction SilentlyContinue
+        if (-not $remainingProcesses) {
+            # Additional wait to ensure DLLs are released
+            Write-Host "  Waiting for DLLs to be fully released..." -ForegroundColor Gray
+            Start-Sleep -Seconds 3
+            
+            # Final verification - check if Steam restarted
+            $finalCheck = Get-Process -Name "steam*" -ErrorAction SilentlyContinue
+            if ($finalCheck) {
+                Write-Host "  [WARNING] Steam appears to have restarted, killing again..." -ForegroundColor Yellow
+                foreach ($proc in $finalCheck) {
+                    try {
+                        Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+                        Write-Host "  [INFO] Killed restarted process: $($proc.Name) (PID: $($proc.Id))" -ForegroundColor Gray
+                    } catch {
+                        Write-Host "  [WARNING] Could not kill restarted process: $($proc.Name)" -ForegroundColor Yellow
+                    }
+                }
+                Start-Sleep -Seconds 2
+                
+                # One more check
+                $stillRunning = Get-Process -Name "steam*" -ErrorAction SilentlyContinue
+                if ($stillRunning) {
+                    Write-Host "  [WARNING] Steam keeps restarting - this may indicate a watchdog process" -ForegroundColor Yellow
+                    # Continue the loop to retry instead of returning true
+                    continue
+                } else {
+                    Write-Host "  [SUCCESS] All Steam processes terminated" -ForegroundColor Green
+                    return $true
+                }
+            } else {
+                Write-Host "  [SUCCESS] All Steam processes terminated" -ForegroundColor Green
+                return $true
+            }
+        } else {
+            Write-Host "  [WARNING] Some processes are still running, retrying..." -ForegroundColor Yellow
+        }
+    }
+    
+    # Final check - if processes still exist after all attempts, report error
+    $finalCheck = Get-Process -Name "steam*" -ErrorAction SilentlyContinue
+    if ($finalCheck) {
+        # Filter out SteamService if it's the only remaining process (it's just a service, not blocking)
+        $nonServiceProcesses = $finalCheck | Where-Object { $_.Name -ne "SteamService" }
+        
+        if ($nonServiceProcesses) {
+            $processList = ($nonServiceProcesses | ForEach-Object { "$($_.Name) (PID: $($_.Id))" }) -join ", "
+            $errorMsg = "The following Steam processes could not be terminated: $processList"
+            $errorDetails = "Steam may have a watchdog process that automatically restarts it. Please manually close Steam and any related processes, then try again."
+            Stop-OnError -ErrorMessage "Failed to terminate all Steam processes" -ErrorDetails $errorDetails -StepName "Step 1"
+        } else {
+            # Only SteamService is running, which is okay - it's just a service
+            Write-Host "  [INFO] Only SteamService is still running (Windows service - not blocking)" -ForegroundColor Cyan
+            Write-Host "  [SUCCESS] All blocking Steam processes terminated" -ForegroundColor Green
+        }
+    }
+    
+    return $true
 }
 
-# Delete steam.cfg if present
-$steamCfgPath = Join-Path $steamPath "steam.cfg"
-if (Test-Path $steamCfgPath) {
-    try {
-        Remove-Item -Path $steamCfgPath -Force -ErrorAction Stop
-        Write-Host "  [INFO] Removed existing steam.cfg file" -ForegroundColor Gray
-    } catch {
-        Write-Host "  [WARNING] Could not remove steam.cfg: $_" -ForegroundColor Yellow
-    }
-}
+Stop-SteamProcesses
 Write-Host ""
 
 # Step 2: Download and extract Steam x32 Latest Build
@@ -508,36 +699,155 @@ $steamZipUrl = "https://github.com/madoiscool/lt_api_links/releases/download/uns
 $steamZipFallbackUrl = "http://files.luatools.work/OneOffFiles/latest32bitsteam.zip"
 $tempSteamZip = Join-Path $env:TEMP "latest32bitsteam.zip"
 
-try {
-    Download-AndExtractWithFallback -PrimaryUrl $steamZipUrl -FallbackUrl $steamZipFallbackUrl -TempZipPath $tempSteamZip -DestinationPath $steamPath -Description "Steam x32 Latest Build"
-    Write-Host ""
-} catch {
-    Write-Host "  [ERROR] Failed to download or extract: $_" -ForegroundColor Red
-    Write-Host "  Continuing anyway..." -ForegroundColor Yellow
-    Write-Host ""
-}
+    try {
+        Download-AndExtractWithFallback -PrimaryUrl $steamZipUrl -FallbackUrl $steamZipFallbackUrl -TempZipPath $tempSteamZip -DestinationPath $steamPath -Description "Steam x32 Latest Build"
+        Write-Host ""
+    } catch {
+        # Clean up temp file on error
+        if (Test-Path $tempSteamZip) {
+            Remove-Item -Path $tempSteamZip -Force -ErrorAction SilentlyContinue
+        }
+        $errorMsg = $_.Exception.Message
+        if (-not $errorMsg) {
+            $errorMsg = $_.ToString()
+        }
+        Stop-OnError -ErrorMessage "Failed to download or extract Steam x32 Latest Build" -ErrorDetails $errorMsg -StepName "Step 2"
+    }
 
-# Step 3: Download and extract zip file (only if millennium.dll is present - to replace it)
+# Step 3: Download and extract zip file (only if millennium.dll or user32.dll is present - to replace it)
 Write-Host "Step 3: Checking for Millennium build..." -ForegroundColor Yellow
-$millenniumDll = Join-Path $steamPath "millennium.dll"
+# Use case-insensitive search for both millennium.dll and user32.dll
+$millenniumDll = Get-ChildItem -Path $steamPath -Filter "millennium.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+$user32Dll = Get-ChildItem -Path $steamPath -Filter "user32.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
 
-if (Test-Path $millenniumDll) {
-    Write-Host "  [INFO] millennium.dll found, downloading and extracting to replace it..." -ForegroundColor Yellow
-    Write-Host "  Location: $millenniumDll" -ForegroundColor White
+# Check if either Millennium DLL is present
+$hasMillennium = ($millenniumDll -and (Test-Path $millenniumDll.FullName))
+$hasUser32 = ($user32Dll -and (Test-Path $user32Dll.FullName))
+
+if ($hasMillennium -or $hasUser32) {
+    $foundDlls = @()
+    if ($hasMillennium) {
+        $foundDlls += "millennium.dll"
+        Write-Host "  [INFO] millennium.dll found" -ForegroundColor Yellow
+        Write-Host "    Location: $($millenniumDll.FullName)" -ForegroundColor White
+    }
+    if ($hasUser32) {
+        $foundDlls += "user32.dll"
+        Write-Host "  [INFO] user32.dll found" -ForegroundColor Yellow
+        Write-Host "    Location: $($user32Dll.FullName)" -ForegroundColor White
+    }
+    Write-Host "  [INFO] Downloading and extracting Millennium build to replace: $($foundDlls -join ', ')" -ForegroundColor Yellow
+    
+    # Function to unlock and remove locked DLL
+    function Unlock-AndRemoveDll {
+        param([string]$DllPath)
+        
+        $maxRetries = 5
+        $retryDelay = 2
+        
+        for ($i = 0; $i -lt $maxRetries; $i++) {
+            try {
+                # Try to get file handle to check if locked
+                $fileStream = [System.IO.File]::Open($DllPath, 'Open', 'ReadWrite', 'None')
+                $fileStream.Close()
+                $fileStream.Dispose()
+                
+                # File is not locked, try to delete
+                Remove-Item -Path $DllPath -Force -ErrorAction Stop
+                Write-Host "  [INFO] Successfully removed locked DLL (attempt $($i + 1))" -ForegroundColor Gray
+                return $true
+            } catch {
+                if ($i -lt $maxRetries - 1) {
+                    Write-Host "  [INFO] DLL is locked, waiting ${retryDelay}s before retry ($($i + 1)/$maxRetries)..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds $retryDelay
+                } else {
+                    Write-Host "  [WARNING] Could not unlock DLL after $maxRetries attempts: $_" -ForegroundColor Yellow
+                    return $false
+                }
+            }
+        }
+        return $false
+    }
+    
+    # Try to unlock and remove the DLL(s) before extraction
+    $dllsToUnlock = @()
+    if ($hasMillennium) {
+        $dllsToUnlock += @{ Path = $millenniumDll.FullName; Name = "millennium.dll" }
+    }
+    if ($hasUser32) {
+        $dllsToUnlock += @{ Path = $user32Dll.FullName; Name = "user32.dll" }
+    }
+    
+    foreach ($dll in $dllsToUnlock) {
+        Write-Host "  Attempting to unlock $($dll.Name)..." -ForegroundColor Gray
+        $unlocked = Unlock-AndRemoveDll -DllPath $dll.Path
+        
+        if (-not $unlocked) {
+            $errorMsg = "Could not unlock $($dll.Name) after multiple attempts. The file may be locked by another process (antivirus, Windows Explorer, etc.)."
+            Stop-OnError -ErrorMessage "Failed to unlock $($dll.Name)" -ErrorDetails $errorMsg -StepName "Step 3"
+        }
+    }
+    
     $zipUrl = "https://github.com/madoiscool/lt_api_links/releases/download/unsteam/luatoolsmilleniumbuild.zip"
     $zipFallbackUrl = "http://files.luatools.work/OneOffFiles/luatoolsmilleniumbuild.zip"
     $tempZip = Join-Path $env:TEMP "luatoolsmilleniumbuild.zip"
 
     try {
         Download-AndExtractWithFallback -PrimaryUrl $zipUrl -FallbackUrl $zipFallbackUrl -TempZipPath $tempZip -DestinationPath $steamPath -Description "Millennium build"
+        
+        # Verify the DLL(s) were actually replaced
+        $verificationFailed = $false
+        $verifiedDlls = @()
+        
+        if ($hasMillennium) {
+            $newMillenniumDll = Get-ChildItem -Path $steamPath -Filter "millennium.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($newMillenniumDll -and (Test-Path $newMillenniumDll.FullName)) {
+                Write-Host "  [SUCCESS] millennium.dll verified after extraction" -ForegroundColor Green
+                Write-Host "    Location: $($newMillenniumDll.FullName)" -ForegroundColor Gray
+                $verifiedDlls += "millennium.dll"
+            } else {
+                Write-Host "  [WARNING] millennium.dll was not found after extraction" -ForegroundColor Yellow
+                $verificationFailed = $true
+            }
+        }
+        
+        if ($hasUser32) {
+            $newUser32Dll = Get-ChildItem -Path $steamPath -Filter "user32.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($newUser32Dll -and (Test-Path $newUser32Dll.FullName)) {
+                Write-Host "  [SUCCESS] user32.dll verified after extraction" -ForegroundColor Green
+                Write-Host "    Location: $($newUser32Dll.FullName)" -ForegroundColor Gray
+                $verifiedDlls += "user32.dll"
+            } else {
+                Write-Host "  [WARNING] user32.dll was not found after extraction" -ForegroundColor Yellow
+                $verificationFailed = $true
+            }
+        }
+        
+        if ($verificationFailed) {
+            $missingDlls = @()
+            if ($hasMillennium -and "millennium.dll" -notin $verifiedDlls) {
+                $missingDlls += "millennium.dll"
+            }
+            if ($hasUser32 -and "user32.dll" -notin $verifiedDlls) {
+                $missingDlls += "user32.dll"
+            }
+            $errorMsg = "The following DLL(s) were not found after extraction: $($missingDlls -join ', '). The replacement may have failed."
+            Stop-OnError -ErrorMessage "Millennium DLL verification failed" -ErrorDetails $errorMsg -StepName "Step 3"
+        }
         Write-Host ""
     } catch {
-        Write-Host "  [ERROR] Failed to download or extract: $_" -ForegroundColor Red
-        Write-Host "  Continuing anyway..." -ForegroundColor Yellow
-        Write-Host ""
+        # Clean up temp file on error
+        if (Test-Path $tempZip) {
+            Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue
+        }
+        $errorMsg = $_.Exception.Message
+        if (-not $errorMsg) {
+            $errorMsg = $_.ToString()
+        }
+        Stop-OnError -ErrorMessage "Failed to download or extract Millennium build" -ErrorDetails $errorMsg -StepName "Step 3"
     }
 } else {
-    Write-Host "  [INFO] millennium.dll not found, skipping download and extraction" -ForegroundColor Cyan
+    Write-Host "  [INFO] Neither millennium.dll nor user32.dll found, skipping download and extraction" -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -569,8 +879,11 @@ try {
     Write-Host ""
     
 } catch {
-    Write-Host "  [ERROR] Failed to start Steam: $_" -ForegroundColor Red
-    Write-Host ""
+    $errorMsg = $_.Exception.Message
+    if (-not $errorMsg) {
+        $errorMsg = $_.ToString()
+    }
+    Stop-OnError -ErrorMessage "Failed to launch Steam" -ErrorDetails $errorMsg -StepName "Step 5"
 }
 
 # ASCII Art
@@ -604,6 +917,3 @@ Write-Host '             \'' ''   _.-''' -ForegroundColor Cyan
 Write-Host '              \ _.-''' -ForegroundColor Cyan
 Write-Host '               `' -ForegroundColor Cyan
 Write-Host ""
-
-# Pause before closing
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
