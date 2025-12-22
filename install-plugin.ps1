@@ -39,7 +39,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 # Steamtools check
 # TODO: Make this prettier?
-$path = Join-Path $steam "hid.dll"
+$path = Join-Path $steam "xinput1_4.dll"
 if ( Test-Path $path ) {
     Log "INFO" "Steamtools already installed"
 } else {
@@ -59,7 +59,8 @@ if ( Test-Path $path ) {
             ($line -imatch "steam\.exe"),
             ($line -imatch "Start-Sleep" -or $line -imatch "Write-Host"),
             ($line -imatch "cls" -or $line -imatch "exit"),
-            ($line -imatch "Stop-Process" -and -not ($line -imatch "Get-Process"))
+            ($line -imatch "Stop-Process" -and -not ($line -imatch "Get-Process"))#,
+	        #($line -imatch "Remove-ItemIfExists" -and $line -imatch "steamCfgPath")
         )
         
         if (-not($conditions -contains $true)) {
@@ -68,7 +69,6 @@ if ( Test-Path $path ) {
     }
 
     $SteamtoolsScript = $keptLines -join "`n"
-    
     Log "ERR" "Steamtools not found."
     
     # Retrying with a max of 5
